@@ -22,6 +22,8 @@ import (
 //go:embed web/static/index.html
 var staticHTML []byte
 
+var Version = "0.1.0"
+
 func main() {
 	port := flag.Int("port", 8000, "Web 控制台监听端口")
 	noOpen := flag.Bool("no-open", false, "启动后不自动打开浏览器")
@@ -30,7 +32,7 @@ func main() {
 	setupWorkingDir()
 
 	log.Println("========================================================")
-	log.Println("🚀 正在启动 Takealot 自动化控制中心 (Go 原生单文件版)")
+	log.Printf("🚀 正在启动 Takealot 自动化控制中心 (v%s - Go 原生跨平台版)", Version)
 	log.Println("========================================================")
 
 	// 1. Initialize Configuration Manager
@@ -44,7 +46,7 @@ func main() {
 	eng := engine.NewEngine(cfgMgr, apiClient)
 
 	// 4. Initialize HTTP Server
-	srv := server.NewServer(cfgMgr, apiClient, eng, staticHTML)
+	srv := server.NewServer(cfgMgr, apiClient, eng, staticHTML, Version)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 	url := fmt.Sprintf("http://%s", addr)

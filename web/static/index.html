@@ -29,6 +29,7 @@
           <div class="flex items-center space-x-2">
             <h1 class="text-lg font-bold text-slate-900 leading-tight">Takealot 自动化控制中心</h1>
             <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800">Go 原生单文件</span>
+            <span v-if="appVersion" class="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-slate-100 text-slate-700 border border-slate-200">v{{ appVersion }}</span>
           </div>
           <p class="text-xs text-slate-500">零依赖 · 高并发 · 跨平台 · 调价监控 & 批量跟卖</p>
         </div>
@@ -438,6 +439,7 @@ createApp({
       total_followed: 0
     });
 
+    const appVersion = ref('');
     const offers = ref([]);
     const followItems = ref([]);
     const logs = ref([]);
@@ -740,6 +742,7 @@ createApp({
     };
 
     onMounted(async () => {
+      fetch('/api/version').then(r => r.json()).then(d => { if (d.version) appVersion.value = d.version; }).catch(() => {});
       await fetchConfig();
       await updateStatus();
       initLogStream();
@@ -750,6 +753,7 @@ createApp({
     });
 
     return {
+      appVersion,
       currentTab,
       showToken,
       autoScroll,

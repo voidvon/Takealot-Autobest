@@ -15,20 +15,22 @@ import (
 )
 
 type Server struct {
-	cfgMgr *config.Manager
-	api    *api.Client
-	eng    *engine.Engine
-	mux    *http.ServeMux
+	cfgMgr     *config.Manager
+	api        *api.Client
+	eng        *engine.Engine
+	mux        *http.ServeMux
 	staticHTML []byte
+	version    string
 }
 
-func NewServer(cfgMgr *config.Manager, apiClient *api.Client, eng *engine.Engine, staticHTML []byte) *Server {
+func NewServer(cfgMgr *config.Manager, apiClient *api.Client, eng *engine.Engine, staticHTML []byte, version string) *Server {
 	s := &Server{
 		cfgMgr:     cfgMgr,
 		api:        apiClient,
 		eng:        eng,
 		mux:        http.NewServeMux(),
 		staticHTML: staticHTML,
+		version:    version,
 	}
 	s.routes()
 	return s
@@ -40,6 +42,7 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("/", s.handleIndex)
+	s.mux.HandleFunc("/api/version", s.handleVersion)
 	s.mux.HandleFunc("/api/config", s.handleConfig)
 	s.mux.HandleFunc("/api/test_auth", s.handleTestAuth)
 	s.mux.HandleFunc("/api/offers", s.handleOffers)
@@ -68,6 +71,12 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(s.staticHTML)
+}
+
+func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	jsonResponse(w, http.StatusOK, map[string]any{
+		"version": s.version,
+	})
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
