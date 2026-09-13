@@ -1,9 +1,11 @@
 # Binaries and executables
 takealot
+Takealot-mac
 *.exe
 *.dll
 *.so
 *.dylib
+dist/
 
 # OS generated files
 .DS_Store

@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"takealot/pkg/api"
@@ -23,6 +26,8 @@ func main() {
 	port := flag.Int("port", 8000, "Web 控制台监听端口")
 	noOpen := flag.Bool("no-open", false, "启动后不自动打开浏览器")
 	flag.Parse()
+
+	setupWorkingDir()
 
 	log.Println("========================================================")
 	log.Println("🚀 正在启动 Takealot 自动化控制中心 (Go 原生单文件版)")
@@ -74,4 +79,26 @@ func openBrowser(url string) {
 		return
 	}
 	_ = cmd.Start()
+}
+
+func setupWorkingDir() {
+	// If config.json already exists in current working dir, use it directly
+	if _, err := os.Stat("config.json"); err == nil {
+		return
+	}
+	// Otherwise, resolve directory of executable
+	exePath, err := os.Executable()
+	if err != nil {
+		return
+	}
+	realPath, err := filepath.EvalSymlinks(exePath)
+	if err != nil {
+		realPath = exePath
+	}
+	dir := filepath.Dir(realPath)
+	// If inside macOS .app bundle (Takealot.app/Contents/MacOS/takealot)
+	if strings.Contains(dir, ".app/Contents/MacOS") {
+		dir = filepath.Dir(filepath.Dir(filepath.Dir(dir)))
+	}
+	_ = os.Chdir(dir)
 }
