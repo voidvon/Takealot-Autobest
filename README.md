@@ -35,20 +35,36 @@ cd /Users/voidvon/Desktop/output
 
 ---
 
-## 🛠️ 跨平台编译说明
+---
 
-如果需要编译给其他操作系统使用：
+## 🛠️ 常用开发与发布命令 (Makefile)
+
+本项目内置完整的 `Makefile`，支持一键开发与自动发布：
 
 ```bash
-# 编译当前平台（Mac arm64 / Apple Silicon）
-go build -o takealot .
+# 启动本地开发调试 (自动释放端口、热运行、并打开浏览器)
+make dev
 
-# 交叉编译到 Windows (x64)
-GOOS=windows GOARCH=amd64 go build -o takealot.exe .
+# 编译当前平台本地单文件
+make build
 
-# 交叉编译到 Linux (云服务器 / VPS)
-GOOS=linux GOARCH=amd64 go build -o takealot_linux .
+# 查看按版本规则递增计算出的下一个版本号
+make bump
+
+# 🚀 自动按版本规则递增、全平台编译打包并发布到 GitHub Release
+make release
+
+# 手动指定特定版本发布
+make release VERSION=0.1.0
 ```
+
+### 🏷️ 自动化版本递增规则
+* 初始版本：`0.1.0`
+* Patch 递增：`0.1.0` -> `0.1.1` -> ... -> `0.1.20`
+* Patch 逢 20 进位：`0.1.20` 下一个版本为 `0.2.0`
+* Minor 逢 20 进位：`0.20.0` 下一个版本为 `1.0.0`
+* `make release` 会全自动处理交叉编译、打 Zip 归档、打 Git Tag、推送并调用 `gh` 发布到 GitHub Releases。
+
 
 ---
 
