@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Takealot 卖家智能调价与跟卖系统 (Go 原生版)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    [v-cloak] { display: none; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #f1f5f9; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800 antialiased font-sans">
+<div id="app" v-cloak class="min-h-screen flex flex-col">
+
+  <!-- Header -->
+  <header class="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <div class="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center text-white font-black text-xl shadow-md shadow-blue-500/20">
+          T
+        </div>
+        <div>
+          <div class="flex items-center space-x-2">
+            <h1 class="text-lg font-bold text-slate-900 leading-tight">Takealot 自动化控制中心</h1>
+            <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800">Go 原生单文件</span>
+          </div>
+          <p class="text-xs text-slate-500">零依赖 · 高并发 · 跨平台 · 调价监控 & 批量跟卖</p>
+        </div>
+      </div>
+
+      <!-- Quick Metrics -->
+      <div class="hidden md:flex items-center space-x-6">
+        <div class="text-center">
+          <div class="text-xs text-slate-400 font-medium">监控状态</div>
+          <div class="text-sm font-semibold flex items-center justify-center space-x-1.5 mt-0.5">
+            <span class="w-2.5 h-2.5 rounded-full" :class="statusBadgeClass"></span>
+            <span>{{ statusText }}</span>
+          </div>
+        </div>
+        <div class="text-center">
+          <div class="text-xs text-slate-400 font-medium">下次轮询</div>
+          <div class="text-sm font-semibold text-slate-700 mt-0.5 font-mono">
+            {{ formatCountdown(status.countdown_seconds) }}
+          </div>
+        </div>
+        <div class="text-center">
+          <div class="text-xs text-slate-400 font-medium">已巡检 / 调价</div>
+          <div class="text-sm font-semibold text-blue-600 mt-0.5 font-mono">
+            {{ status.total_checked }} / {{ status.total_repriced }}
+          </div>
+        </div>
+      </div>
+
+      <!-- Control Buttons -->
+      <div class="flex items-center space-x-2">
+        <button v-if="!status.is_running" @click="startReprice" :disabled="loading.start" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium transition shadow-sm flex items-center space-x-1.5 disabled:opacity-50">
+          <i class="fa-solid fa-play text-xs"></i>
+          <span>开始监控</span>
+        </button>
+        <template v-else>
+          <button @click="pauseReprice" class="px-3.5 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-sm font-medium transition shadow-sm flex items-center space-x-1.5">
+            <i :class="status.is_paused ? 'fa-solid fa-play' : 'fa-solid fa-pause'" class="text-xs"></i>
+            <span>{{ status.is_paused ? '恢复' : '暂停' }}</span>
+          </button>
+          <button @click="stopReprice" class="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-sm font-medium transition shadow-sm flex items-center space-x-1.5">
+            <i class="fa-solid fa-stop text-xs"></i>
+            <span>停止</span>
+          </button>
+        </template>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Tabs -->
+  <div class="bg-white border-b border-slate-200">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <nav class="flex space-x-8">
+        <button @click="currentTab = 'reprice'" :class="currentTab === 'reprice' ? 'border-blue-600 text-blue-600 font-semibold' : 'border-transparent text-slate-500 hover:text-slate-700'" class="py-3 px-1 border-b-2 text-sm flex items-center space-x-2 transition">
+          <i class="fa-solid fa-chart-line"></i>
+          <span>调价监控管理</span>
+        </button>
+        <button @click="currentTab = 'follow'" :class="currentTab === 'follow' ? 'border-blue-600 text-blue-600 font-semibold' : 'border-transparent text-slate-500 hover:text-slate-700'" class="py-3 px-1 border-b-2 text-sm flex items-center space-x-2 transition">
+          <i class="fa-solid fa-file-import"></i>
+          <span>批量表格跟卖</span>
+        </button>
+        <button @click="currentTab = 'settings'" :class="currentTab === 'settings' ? 'border-blue-600 text-blue-600 font-semibold' : 'border-transparent text-slate-500 hover:text-slate-700'" class="py-3 px-1 border-b-2 text-sm flex items-center space-x-2 transition">
+          <i class="fa-solid fa-key"></i>
+          <span>店铺授权与参数</span>
+        </button>
+      </nav>
+    </div>
+  </div>
+
+  <!-- Content Body -->
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 flex-1 w-full space-y-6">
+
+    <!-- TAB 1: REPRICE -->
+    <div v-show="currentTab === 'reprice'" class="space-y-6">
+      <!-- Parameters Bar -->
+      <div class="bg-white rounded-xl p-5 border border-slate-200 shadow-sm flex flex-wrap gap-4 items-center justify-between">
+        <div class="flex flex-wrap gap-4 items-center">
+          <div class="flex items-center space-x-2">
+            <span class="text-xs font-semibold text-slate-500">降价幅度 (R)</span>
+            <input type="number" v-model.number="config.price_decrease_step" min="1" class="w-20 px-2.5 py-1.5 border border-slate-300 rounded-lg text-sm text-center font-medium focus:ring-2 focus:ring-blue-500 outline-none">
+          </div>
+          <div class="flex items-center space-x-2">
+            <span class="text-xs font-semibold text-slate-500">提价幅度 (R)</span>
+            <input type="number" v-model.number="config.price_increase_step" min="1" class="w-20 px-2.5 py-1.5 border border-slate-300 rounded-lg text-sm text-center font-medium focus:ring-2 focus:ring-blue-500 outline-none">
+          </div>
+          <div class="flex items-center space-x-2">
+            <span class="text-xs font-semibold text-slate-500">原价比例 (%)</span>
+            <input type="number" v-model.number="config.rrp_percentage" min="100" class="w-20 px-2.5 py-1.5 border border-slate-300 rounded-lg text-sm text-center font-medium focus:ring-2 focus:ring-blue-500 outline-none">
+          </div>
+          <div class="flex items-center space-x-2">
+            <span class="text-xs font-semibold text-slate-500">轮询周期 (分钟)</span>
+            <input type="number" v-model.number="config.interval_minutes" min="1" class="w-20 px-2.5 py-1.5 border border-slate-300 rounded-lg text-sm text-center font-medium focus:ring-2 focus:ring-blue-500 outline-none">
+          </div>
+          <button @click="saveConfig" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-xs font-medium transition flex items-center space-x-1">
+            <i class="fa-solid fa-floppy-disk"></i>
+            <span>保存参数</span>
+          </button>
+        </div>
+
+        <div class="flex items-center space-x-2">
+          <button @click="fetchOffers" :disabled="loading.offers" class="px-3.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-xs font-medium transition flex items-center space-x-1.5 disabled:opacity-50">
+            <i :class="loading.offers ? 'fa-solid fa-spinner fa-spin' : 'fa-solid fa-rotate'" class="text-xs"></i>
+            <span>从 Takealot 同步商品</span>
+          </button>
+          <button @click="saveTargets" :disabled="loading.saveTargets" class="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium transition shadow-sm flex items-center space-x-1.5 disabled:opacity-50">
+            <i class="fa-solid fa-check"></i>
+            <span>保存已选监控项</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Filter & Batch Tools -->
+      <div class="flex flex-wrap gap-3 items-center justify-between">
+        <div class="flex items-center space-x-2 flex-1 max-w-md">
+          <div class="relative w-full">
+            <i class="fa-solid fa-magnifying-glass absolute left-3 top-3 text-slate-400 text-sm"></i>
+            <input type="text" v-model="filterKeyword" placeholder="搜索 TSIN、PLID 或商品标题..." class="w-full pl-9 pr-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white">
+          </div>
+          <select v-model="filterSelection" class="border border-slate-300 rounded-lg px-2.5 py-2 text-sm bg-white outline-none">
+            <option value="all">全部商品</option>
+            <option value="selected">仅显示已勾选监控</option>
+            <option value="unselected">仅显示未勾选</option>
+            <option value="losing">🔴 失去优先 (竞品更低)</option>
+            <option value="winning">🟢 处于优先 (保持最低)</option>
+            <option value="solo">⚪️ 独家在售 (无竞品)</option>
+          </select>
+        </div>
+
+        <div class="flex items-center space-x-2">
+          <input type="number" v-model.number="batchMinPrice" placeholder="批量底价" class="w-24 px-2.5 py-1.5 border border-slate-300 rounded-lg text-xs text-center outline-none bg-white">
+          <button @click="applyBatchMinPrice" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-medium border border-slate-200 transition">
+            应用到底价
+          </button>
+          <span class="text-xs text-slate-400 ml-2">已监控: <b class="text-slate-700">{{ selectedOffersCount }}</b> / {{ offers.length }}</span>
+        </div>
+      </div>
+
+      <!-- Priority Stats Bar -->
+      <div v-if="offers.length > 0" class="flex flex-wrap items-center gap-3 bg-white p-3 rounded-xl border border-slate-200 text-xs shadow-sm">
+        <span class="font-bold text-slate-700">比价看板:</span>
+        <span class="inline-flex items-center px-2.5 py-1 rounded-full font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+          <i class="fa-solid fa-crown mr-1.5 text-emerald-500"></i>处于优先: <b>{{ winningOffersCount }}</b> 款
+        </span>
+        <span class="inline-flex items-center px-2.5 py-1 rounded-full font-medium bg-rose-50 text-rose-700 border border-rose-200">
+          <i class="fa-solid fa-arrow-trend-down mr-1.5 text-rose-500"></i>失去优先: <b>{{ losingOffersCount }}</b> 款
+        </span>
+        <span class="inline-flex items-center px-2.5 py-1 rounded-full font-medium bg-slate-50 text-slate-600 border border-slate-200">
+          <i class="fa-solid fa-shield mr-1.5 text-slate-400"></i>独家在售: <b>{{ soloOffersCount }}</b> 款
+        </span>
+      </div>
+
+      <!-- Offers Table -->
+      <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        <div class="overflow-x-auto max-h-[600px]">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase sticky top-0 z-10">
+              <tr>
+                <th class="p-3.5 w-10 text-center">
+                  <input type="checkbox" @change="toggleSelectAll($event.target.checked)" :checked="isAllSelected" class="rounded text-blue-600 focus:ring-blue-500">
+                </th>
+                <th class="p-3.5 w-32">TSIN / PLID</th>
+                <th class="p-3.5 min-w-[260px]">商品标题</th>
+                <th class="p-3.5 w-24 text-center">当前售价</th>
+                <th class="p-3.5 w-44 text-center">比价状态 / 竞品最低</th>
+                <th class="p-3.5 w-24 text-center">建议零售(RRP)</th>
+                <th class="p-3.5 w-20 text-center">库存</th>
+                <th class="p-3.5 w-28 text-center">底价保护 (R)</th>
+                <th class="p-3.5 w-36 text-center">最后修改时间</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              <tr v-if="filteredOffers.length === 0" class="text-center py-8">
+                <td colspan="9" class="p-8 text-slate-400">
+                  <div v-if="loading.offers" class="flex flex-col items-center space-y-2">
+                    <i class="fa-solid fa-spinner fa-spin text-2xl text-blue-500"></i>
+                    <span>正在从 Takealot 同步商品中...</span>
+                  </div>
+                  <div v-else class="flex flex-col items-center space-y-2">
+                    <i class="fa-solid fa-box-open text-3xl text-slate-300"></i>
+                    <span>暂无商品或未匹配到筛选结果，请点击右上角【从 Takealot 同步商品】</span>
+                  </div>
+                </td>
+              </tr>
+              <tr v-for="item in filteredOffers" :key="item.key" :class="item.selected ? 'bg-blue-50/40' : 'hover:bg-slate-50/80'" class="transition">
+                <td class="p-3.5 text-center">
+                  <input type="checkbox" v-model="item.selected" class="rounded text-blue-600 focus:ring-blue-500">
+                </td>
+                <td class="p-3.5 font-mono text-xs text-slate-600">
+                  <div class="font-bold text-slate-800">{{ item.tsin_id }}</div>
+                  <div class="text-slate-400">PLID: {{ item.plid }}</div>
+                </td>
+                <td class="p-3.5">
+                  <div class="font-medium text-slate-800 line-clamp-2" :title="item.title">{{ item.title }}</div>
+                </td>
+                <td class="p-3.5 text-center font-bold text-slate-900 font-mono">
+                  R {{ item.selling_price }}
+                </td>
+                <td class="p-3.5 text-center">
+                  <div v-if="item.priority_status === 'winning'" class="space-y-0.5">
+                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-emerald-100 text-emerald-800">
+                      <i class="fa-solid fa-crown text-[10px] mr-1 text-emerald-600"></i> 处于优先
+                    </span>
+                    <div class="text-[11px] text-slate-500 font-mono">
+                      全网最低 <span class="text-slate-400">({{ item.competing_offers }}家在售)</span>
+                    </div>
+                  </div>
+                  <div v-else-if="item.priority_status === 'losing'" class="space-y-0.5">
+                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-rose-100 text-rose-700 animate-pulse">
+                      <i class="fa-solid fa-arrow-trend-down text-[10px] mr-1"></i> 失去优先
+                    </span>
+                    <div class="text-[11px] font-mono text-rose-600 font-semibold">
+                      竞品最低 R{{ item.best_price }} (高出 R{{ item.price_diff }})
+                    </div>
+                  </div>
+                  <div v-else class="space-y-0.5">
+                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-slate-100 text-slate-600">
+                      <i class="fa-solid fa-shield text-[10px] mr-1 text-slate-400"></i> 独家在售
+                    </span>
+                    <div class="text-[11px] text-slate-400 font-mono">
+                      无其他卖家
+                    </div>
+                  </div>
+                </td>
+                <td class="p-3.5 text-center text-slate-500 font-mono text-xs">
+                  R {{ item.rrp }}
+                </td>
+                <td class="p-3.5 text-center font-medium font-mono" :class="item.stock > 0 ? 'text-emerald-600' : 'text-slate-400'">
+                  {{ item.stock }}
+                </td>
+                <td class="p-3.5 text-center">
+                  <input type="number" v-model.number="item.min_price" min="0" class="w-20 px-2 py-1 border border-slate-300 rounded text-center text-xs font-bold text-rose-600 focus:ring-2 focus:ring-rose-400 outline-none bg-white" placeholder="0不限">
+                </td>
+                <td class="p-3.5 text-center text-xs text-slate-400 font-mono">
+                  {{ formatDate(item.date_modified) }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 2: FOLLOW SELLING -->
+    <div v-show="currentTab === 'follow'" class="space-y-6">
+      <div class="bg-white rounded-xl p-6 border border-slate-200 shadow-sm space-y-5">
+        <div>
+          <h2 class="text-base font-bold text-slate-900">批量表格导入与跟卖</h2>
+          <p class="text-xs text-slate-500 mt-1">
+            支持原生上传 Excel 表格（兼容现有的 <code class="bg-slate-100 px-1 py-0.5 rounded text-blue-600">待上传摸板.xlsx</code>），系统自动抓取变体并创建 Offer。
+          </p>
+        </div>
+
+        <!-- Dropzone / Upload -->
+        <div class="border-2 border-dashed border-slate-300 hover:border-blue-500 rounded-xl p-8 text-center transition cursor-pointer bg-slate-50/50" @click="triggerFileInput">
+          <input type="file" ref="fileInput" @change="handleFileUpload" accept=".xlsx,.xls" class="hidden">
+          <div class="flex flex-col items-center space-y-2">
+            <i class="fa-solid fa-cloud-arrow-up text-3xl text-blue-500"></i>
+            <span class="text-sm font-semibold text-slate-700">点击上传或拖拽 Excel 文件到此处</span>
+            <span class="text-xs text-slate-400">表格格式：列0[库存] · 列1[最低价] · 列2[商品链接或PLID]</span>
+          </div>
+        </div>
+
+        <!-- Follow Items Preview Table -->
+        <div v-if="followItems.length > 0" class="space-y-4">
+          <div class="flex items-center justify-between">
+            <span class="text-sm font-bold text-slate-800">导入待处理列表 (共 {{ followItems.length }} 条)</span>
+            <button @click="startFollowBatch" :disabled="status.follow_running" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium transition shadow-sm flex items-center space-x-2 disabled:opacity-50">
+              <i class="fa-solid fa-rocket"></i>
+              <span>{{ status.follow_running ? '正在跟卖执行中...' : '开始批量跟卖上架' }}</span>
+            </button>
+          </div>
+
+          <div class="border border-slate-200 rounded-lg overflow-hidden max-h-96 overflow-y-auto">
+            <table class="w-full text-left text-xs">
+              <thead class="bg-slate-100 border-b border-slate-200 font-semibold text-slate-600 uppercase">
+                <tr>
+                  <th class="p-2.5 w-12 text-center">#</th>
+                  <th class="p-2.5">链接 / PLID</th>
+                  <th class="p-2.5 w-24 text-center">库存设置</th>
+                  <th class="p-2.5 w-28 text-center">底价保护 (R)</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-100 font-mono">
+                <tr v-for="(item, idx) in followItems" :key="idx" class="hover:bg-slate-50">
+                  <td class="p-2.5 text-center text-slate-400">{{ idx + 1 }}</td>
+                  <td class="p-2.5 text-slate-700 truncate max-w-md" :title="item.url">{{ item.url }}</td>
+                  <td class="p-2.5 text-center">{{ item.stock }}</td>
+                  <td class="p-2.5 text-center text-rose-600 font-bold">R {{ item.min_price }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 3: SETTINGS -->
+    <div v-show="currentTab === 'settings'" class="space-y-6">
+      <div class="bg-white rounded-xl p-6 border border-slate-200 shadow-sm space-y-6 max-w-3xl">
+        <div>
+          <h2 class="text-base font-bold text-slate-900">Takealot 卖家授权认证凭证</h2>
+          <p class="text-xs text-slate-500 mt-1">
+            直接配置官方卖家平台的 Authorization 凭证，无需第三方代理或内嵌浏览器。
+          </p>
+        </div>
+
+        <div class="space-y-4">
+          <div>
+            <label class="block text-xs font-semibold text-slate-700 mb-1.5">Authorization Token / API Key</label>
+            <div class="relative">
+              <input :type="showToken ? 'text' : 'password'" v-model="config.authorization" placeholder="例如：Key ... 或 Bearer ..." class="w-full px-3.5 py-2.5 border border-slate-300 rounded-lg text-sm font-mono focus:ring-2 focus:ring-blue-500 outline-none pr-10">
+              <button type="button" @click="showToken = !showToken" class="absolute right-3 top-3 text-slate-400 hover:text-slate-600 text-sm">
+                <i :class="showToken ? 'fa-solid fa-eye-slash' : 'fa-solid fa-eye'"></i>
+              </button>
+            </div>
+          </div>
+
+          <div class="flex items-center space-x-3">
+            <button @click="testAuth" :disabled="loading.auth" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition shadow-sm flex items-center space-x-1.5 disabled:opacity-50">
+              <i :class="loading.auth ? 'fa-solid fa-spinner fa-spin' : 'fa-solid fa-plug'" class="text-xs"></i>
+              <span>测试连接状态</span>
+            </button>
+            <button @click="saveConfig" class="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-sm font-medium transition">
+              保存设置
+            </button>
+            <span v-if="authResult" :class="authResult.success ? 'text-emerald-600' : 'text-rose-600'" class="text-xs font-semibold">
+              {{ authResult.message }}
+            </span>
+          </div>
+        </div>
+
+        <!-- Tutorial Guide -->
+        <div class="bg-blue-50 border border-blue-200 rounded-xl p-4 text-xs text-blue-900 space-y-2">
+          <div class="font-bold flex items-center space-x-1.5 text-blue-800">
+            <i class="fa-solid fa-circle-question"></i>
+            <span>如何获取 Authorization 凭证？（只需 20 秒）</span>
+          </div>
+          <ol class="list-decimal list-inside space-y-1 text-slate-600 leading-relaxed">
+            <li>在 Mac 上用 Chrome / Safari 打开并登录 <a href="https://sellers.takealot.com/" target="_blank" class="text-blue-600 underline font-medium">sellers.takealot.com</a>。</li>
+            <li>在页面空白处右键点击【检查】（或按 <kbd class="px-1 bg-white border border-slate-300 rounded text-slate-800">Option+Cmd+I</kbd>）打开开发者工具，切换到 <b>Network（网络）</b> 选项卡。</li>
+            <li>点击页面任意操作（如点击 Existing Offers），在请求列表中找到包含 <code>seller-api.takealot.com</code> 的任意一条请求。</li>
+            <li>在 <b>Request Headers（请求头）</b> 中找到 <code>authorization</code> 项，将其后的完整字符串复制并粘贴到上方输入框保存即可。</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+
+    <!-- Live Console Logs (Always Visible at Bottom) -->
+    <div class="bg-slate-900 rounded-xl border border-slate-800 shadow-md overflow-hidden flex flex-col">
+      <div class="bg-slate-950/80 px-4 py-2.5 border-b border-slate-800 flex items-center justify-between text-xs text-slate-400">
+        <div class="flex items-center space-x-2">
+          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span class="font-mono font-bold text-slate-300">LIVE CONSOLE LOGS</span>
+          <span class="text-slate-600">|</span>
+          <span class="text-slate-500">实时调价与操作日志流</span>
+        </div>
+        <div class="flex items-center space-x-3">
+          <label class="flex items-center space-x-1 cursor-pointer hover:text-slate-300">
+            <input type="checkbox" v-model="autoScroll" class="rounded bg-slate-800 border-slate-700 text-blue-500 focus:ring-0 text-xs">
+            <span>自动滚动</span>
+          </label>
+          <button @click="clearLogs" class="hover:text-slate-200 transition">
+            <i class="fa-solid fa-trash-can mr-1"></i>清屏
+          </button>
+        </div>
+      </div>
+      <div ref="logContainer" class="p-4 font-mono text-xs text-slate-300 h-48 overflow-y-auto space-y-1 select-text">
+        <div v-if="logs.length === 0" class="text-slate-600 italic">暂无日志输出...</div>
+        <div v-for="(log, idx) in logs" :key="idx" class="leading-relaxed flex items-start space-x-2">
+          <span class="text-slate-500 shrink-0">[{{ log.time }}]</span>
+          <span :class="getLogLevelClass(log.level)" class="font-semibold shrink-0">[{{ log.level }}]</span>
+          <span class="break-all" :class="getLogMessageClass(log.level)">{{ log.message }}</span>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+const { createApp, ref, computed, onMounted, nextTick } = Vue;
+
+createApp({
+  setup() {
+    const currentTab = ref('reprice');
+    const showToken = ref(false);
+    const autoScroll = ref(true);
+    const logContainer = ref(null);
+    const fileInput = ref(null);
+
+    const config = ref({
+      authorization: '',
+      price_decrease_step: 1,
+      price_increase_step: 1,
+      rrp_percentage: 120.0,
+      interval_minutes: 5,
+      bulk_stock: 1,
+      max_fetch_offers: 1000
+    });
+
+    const status = ref({
+      is_running: false,
+      is_paused: false,
+      follow_running: false,
+      countdown_seconds: 0,
+      total_checked: 0,
+      total_repriced: 0,
+      total_followed: 0
+    });
+
+    const offers = ref([]);
+    const followItems = ref([]);
+    const logs = ref([]);
+    const authResult = ref(null);
+    const filterKeyword = ref('');
+    const filterSelection = ref('all');
+    const batchMinPrice = ref(null);
+
+    const loading = ref({
+      auth: false,
+      offers: false,
+      start: false,
+      saveTargets: false
+    });
+
+    // Computed
+    const statusText = computed(() => {
+      if (!status.value.is_running) return '已停止';
+      if (status.value.is_paused) return '已暂停';
+      return '监控中';
+    });
+
+    const statusBadgeClass = computed(() => {
+      if (!status.value.is_running) return 'bg-slate-400';
+      if (status.value.is_paused) return 'bg-amber-400';
+      return 'bg-emerald-500 animate-pulse';
+    });
+
+    const filteredOffers = computed(() => {
+      let list = offers.value;
+      if (filterSelection.value === 'selected') {
+        list = list.filter(o => o.selected);
+      } else if (filterSelection.value === 'unselected') {
+        list = list.filter(o => !o.selected);
+      } else if (filterSelection.value === 'losing') {
+        list = list.filter(o => o.priority_status === 'losing');
+      } else if (filterSelection.value === 'winning') {
+        list = list.filter(o => o.priority_status === 'winning');
+      } else if (filterSelection.value === 'solo') {
+        list = list.filter(o => o.priority_status === 'solo');
+      }
+      if (filterKeyword.value.trim()) {
+        const kw = filterKeyword.value.trim().toLowerCase();
+        list = list.filter(o => 
+          o.title.toLowerCase().includes(kw) || 
+          o.tsin_id.toLowerCase().includes(kw) || 
+          o.plid.toLowerCase().includes(kw)
+        );
+      }
+      return list;
+    });
+
+    const selectedOffersCount = computed(() => {
+      return offers.value.filter(o => o.selected).length;
+    });
+
+    const winningOffersCount = computed(() => {
+      return offers.value.filter(o => o.priority_status === 'winning').length;
+    });
+
+    const losingOffersCount = computed(() => {
+      return offers.value.filter(o => o.priority_status === 'losing').length;
+    });
+
+    const soloOffersCount = computed(() => {
+      return offers.value.filter(o => o.priority_status === 'solo').length;
+    });
+
+    const isAllSelected = computed(() => {
+      return filteredOffers.value.length > 0 && filteredOffers.value.every(o => o.selected);
+    });
+
+    // Methods
+    const formatCountdown = (seconds) => {
+      if (!status.value.is_running || seconds <= 0) return '--:--';
+      const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+      const s = (seconds % 60).toString().padStart(2, '0');
+      return `${m}:${s}`;
+    };
+
+    const formatDate = (dateStr) => {
+      if (!dateStr) return '-';
+      return dateStr.replace('T', ' ').substring(0, 19);
+    };
+
+    const getLogLevelClass = (level) => {
+      switch(level) {
+        case 'SUCCESS': return 'text-emerald-400';
+        case 'WARN': return 'text-amber-400';
+        case 'ERROR': return 'text-rose-400';
+        case 'DEBUG': return 'text-slate-500';
+        default: return 'text-blue-400';
+      }
+    };
+
+    const getLogMessageClass = (level) => {
+      if (level === 'SUCCESS') return 'text-emerald-200';
+      if (level === 'ERROR') return 'text-rose-300';
+      return 'text-slate-300';
+    };
+
+    const fetchConfig = async () => {
+      try {
+        const res = await fetch('/api/config');
+        const data = await res.json();
+        config.value = { ...config.value, ...data };
+      } catch (err) {
+        console.error(err);
+      }
+    };
+
+    const saveConfig = async () => {
+      try {
+        const res = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(config.value)
+        });
+        const data = await res.json();
+        alert(data.message || '配置已保存！');
+      } catch (err) {
+        alert('保存失败: ' + err.message);
+      }
+    };
+
+    const testAuth = async () => {
+      loading.value.auth = true;
+      authResult.value = null;
+      try {
+        await saveConfig();
+        const res = await fetch('/api/test_auth', { method: 'POST' });
+        authResult.value = await res.json();
+      } catch (err) {
+        authResult.value = { success: false, message: '测试连接失败: ' + err.message };
+      } finally {
+        loading.value.auth = false;
+      }
+    };
+
+    const fetchOffers = async () => {
+      loading.value.offers = true;
+      try {
+        const res = await fetch('/api/offers');
+        const data = await res.json();
+        if (data.success) {
+          offers.value = data.offers;
+        } else {
+          alert('获取商品失败: ' + (data.error || '未知错误'));
+        }
+      } catch (err) {
+        alert('获取商品失败: ' + err.message);
+      } finally {
+        loading.value.offers = false;
+      }
+    };
+
+    const saveTargets = async () => {
+      loading.value.saveTargets = true;
+      const targets = {};
+      offers.value.forEach(o => {
+        targets[o.key] = {
+          selected: o.selected,
+          min_price: o.min_price,
+          max_price: o.max_price
+        };
+      });
+      try {
+        const res = await fetch('/api/targets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ targets })
+        });
+        const data = await res.json();
+        alert(data.message || '监控项已保存！');
+      } catch (err) {
+        alert('保存失败: ' + err.message);
+      } finally {
+        loading.value.saveTargets = false;
+      }
+    };
+
+    const toggleSelectAll = (checked) => {
+      filteredOffers.value.forEach(o => o.selected = checked);
+    };
+
+    const applyBatchMinPrice = () => {
+      if (batchMinPrice.value === null || batchMinPrice.value < 0) return;
+      filteredOffers.value.forEach(o => {
+        if (o.selected) {
+          o.min_price = batchMinPrice.value;
+        }
+      });
+    };
+
+    const startReprice = async () => {
+      loading.value.start = true;
+      try {
+        await saveTargets();
+        const res = await fetch('/api/reprice/start', { method: 'POST' });
+        const data = await res.json();
+        if (!data.success) alert(data.message);
+        await updateStatus();
+      } catch (err) {
+        alert('启动失败: ' + err.message);
+      } finally {
+        loading.value.start = false;
+      }
+    };
+
+    const pauseReprice = async () => {
+      try {
+        const res = await fetch('/api/reprice/pause', { method: 'POST' });
+        await updateStatus();
+      } catch (err) {
+        console.error(err);
+      }
+    };
+
+    const stopReprice = async () => {
+      try {
+        const res = await fetch('/api/reprice/stop', { method: 'POST' });
+        await updateStatus();
+      } catch (err) {
+        console.error(err);
+      }
+    };
+
+    const updateStatus = async () => {
+      try {
+        const res = await fetch('/api/reprice/status');
+        status.value = await res.json();
+      } catch (err) {
+        console.error(err);
+      }
+    };
+
+    const triggerFileInput = () => {
+      if (fileInput.value) fileInput.value.click();
+    };
+
+    const handleFileUpload = async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      const formData = new FormData();
+      formData.append('file', file);
+      try {
+        const res = await fetch('/api/follow/upload', {
+          method: 'POST',
+          body: formData
+        });
+        const data = await res.json();
+        if (data.success) {
+          followItems.value = data.items;
+        } else {
+          alert('解析失败: ' + data.error);
+        }
+      } catch (err) {
+        alert('上传失败: ' + err.message);
+      }
+    };
+
+    const startFollowBatch = async () => {
+      if (followItems.value.length === 0) return;
+      try {
+        const res = await fetch('/api/follow/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: followItems.value })
+        });
+        const data = await res.json();
+        alert(data.message);
+        await updateStatus();
+      } catch (err) {
+        alert('启动跟卖失败: ' + err.message);
+      }
+    };
+
+    const clearLogs = () => {
+      logs.value = [];
+    };
+
+    const scrollToBottom = () => {
+      if (autoScroll.value && logContainer.value) {
+        nextTick(() => {
+          logContainer.value.scrollTop = logContainer.value.scrollHeight;
+        });
+      }
+    };
+
+    const initLogStream = () => {
+      const eventSource = new EventSource('/api/logs/stream');
+      eventSource.onmessage = (event) => {
+        try {
+          const entry = JSON.parse(event.data);
+          logs.value.push(entry);
+          if (logs.value.length > 500) logs.value.shift();
+          scrollToBottom();
+        } catch (e) {}
+      };
+    };
+
+    onMounted(async () => {
+      await fetchConfig();
+      await updateStatus();
+      initLogStream();
+      setInterval(updateStatus, 1000);
+      if (config.value.authorization) {
+        fetchOffers();
+      }
+    });
+
+    return {
+      currentTab,
+      showToken,
+      autoScroll,
+      logContainer,
+      fileInput,
+      config,
+      status,
+      offers,
+      followItems,
+      logs,
+      authResult,
+      filterKeyword,
+      filterSelection,
+      batchMinPrice,
+      loading,
+      statusText,
+      statusBadgeClass,
+      filteredOffers,
+      selectedOffersCount,
+      isAllSelected,
+      formatCountdown,
+      formatDate,
+      getLogLevelClass,
+      getLogMessageClass,
+      saveConfig,
+      testAuth,
+      fetchOffers,
+      saveTargets,
+      toggleSelectAll,
+      applyBatchMinPrice,
+      startReprice,
+      pauseReprice,
+      stopReprice,
+      triggerFileInput,
+      handleFileUpload,
+      startFollowBatch,
+      clearLogs
+    };
+  }
+}).mount('#app');
+</script>
+</body>
+</html>
