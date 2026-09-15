@@ -6,7 +6,7 @@ Takealot-mac
 *.so
 *.dylib
 dist/
-
+node_modules/
 # OS generated files
 .DS_Store
 .DS_Store?
@@ -28,3 +28,4 @@ Thumbs.db
 
 # Sensitive local config with Seller API Token
 config.json
+*.db

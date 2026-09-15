@@ -10,6 +10,7 @@ import (
 
 	"takealot/pkg/api"
 	"takealot/pkg/config"
+	"takealot/pkg/db"
 )
 
 type LogEntry struct {
@@ -31,8 +32,9 @@ type Status struct {
 }
 
 type Engine struct {
-	cfgMgr  *config.Manager
-	api     *api.Client
+	cfgMgr *config.Manager
+	api    *api.Client
+	db     *db.DB
 
 	mu            sync.RWMutex
 	isRunning     bool
@@ -51,10 +53,11 @@ type Engine struct {
 	subscribers map[chan LogEntry]struct{}
 }
 
-func NewEngine(cfgMgr *config.Manager, apiClient *api.Client) *Engine {
+func NewEngine(cfgMgr *config.Manager, apiClient *api.Client, database *db.DB) *Engine {
 	return &Engine{
 		cfgMgr:      cfgMgr,
 		api:         apiClient,
+		db:          database,
 		logs:        make([]LogEntry, 0, 500),
 		subscribers: make(map[chan LogEntry]struct{}),
 	}
@@ -351,6 +354,9 @@ func (e *Engine) executeRepriceCycle(ctx context.Context) {
 				e.mu.Lock()
 				e.totalRepriced++
 				e.mu.Unlock()
+				if e.db != nil {
+					_ = e.db.RecordReprice(key, tsinID, title, curPrice, newPrice, bestPrice, actionDesc)
+				}
 				e.Log(fmt.Sprintf("✅ [调价成功] %s... (TSIN:%s) | 原价: R%d -> 新价: R%d (RRP: R%d) | 原因: %s",
 					truncate(title, 22), tsinID, curPrice, newPrice, rrp, actionDesc), "SUCCESS")
 			} else {
@@ -460,8 +466,14 @@ func (e *Engine) executeFollowBatch(items []FollowItem) {
 						MinPrice: minPrice,
 						MaxPrice: 0,
 					}
+					if e.db != nil {
+						_ = e.db.RecordFollow(item.URL, tsinID, productlineID, gtin, item.Stock, minPrice, "SUCCESS", fmt.Sprintf("售价: R%d, RRP: R%d", offerPrice, rrp))
+					}
 					e.Log(fmt.Sprintf("🎉 成功跟卖 GTIN:%s (TSIN:%s) | 售价: R%d, RRP: R%d", gtin, tsinID, offerPrice, rrp), "SUCCESS")
 				} else {
+					if e.db != nil {
+						_ = e.db.RecordFollow(item.URL, tsinID, productlineID, gtin, item.Stock, minPrice, "FAILED", err.Error())
+					}
 					e.Log(fmt.Sprintf("❌ 跟卖失败 GTIN:%s: %v", gtin, err), "ERROR")
 				}
 				time.Sleep(1500 * time.Millisecond)

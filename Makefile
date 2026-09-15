@@ -34,13 +34,17 @@ dev:
 	@lsof -ti :8000 | xargs kill -9 2>/dev/null || true
 	@go run -ldflags="-X main.Version=dev" .
 
-build:
+build-frontend:
+	@echo "🎨 正在构建现代化 Vite React 前端 (Base UI Nova 风格)..."
+	@cd web && npm run build
+
+build: build-frontend
 	@echo "🔨 正在构建本地可执行程序 (v$(VERSION))..."
 	@go build -ldflags="-s -w -X main.Version=$(VERSION)" -o $(BINARY_NAME) .
 	@chmod +x $(BINARY_NAME)
 	@echo "✅ 构建完成: ./$(BINARY_NAME)"
 
-release:
+release: build-frontend
 	@echo "========================================================"
 	@echo "📦 正在执行自动化发布: $(TAG)"
 	@echo "========================================================"
