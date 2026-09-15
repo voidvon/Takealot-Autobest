@@ -11,10 +11,53 @@ import { FollowTab } from './components/follow/FollowTab'
 import { LogsTab } from './components/logs/LogsTab'
 import { SettingsTab } from './components/settings/SettingsTab'
 
+const VALID_TABS: TabId[] = ['dashboard', 'repricer', 'catalog', 'sales', 'follow', 'logs', 'settings']
+
+const getTabFromLocation = (): TabId => {
+  // 优先从 Hash 解析 (如 #/repricer 或 #repricer)
+  const hash = window.location.hash.replace(/^#\/?/, '').toLowerCase()
+  if (VALID_TABS.includes(hash as TabId)) {
+    return hash as TabId
+  }
+  // 备选从 Pathname 解析 (如 /repricer)
+  const path = window.location.pathname.replace(/^\//, '').toLowerCase()
+  if (VALID_TABS.includes(path as TabId)) {
+    return path as TabId
+  }
+  return 'dashboard'
+}
+
 export const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<TabId>('dashboard')
+  const [activeTab, setActiveTabState] = useState<TabId>(getTabFromLocation)
   const [version, setVersion] = useState('0.2.0')
   const [loadingAction, setLoadingAction] = useState(false)
+
+  const handleSelectTab = (tab: TabId) => {
+    setActiveTabState(tab)
+    if (window.location.hash !== `#/${tab}`) {
+      window.location.hash = `/${tab}`
+    }
+  }
+
+  // 监听浏览器 URL 路由变化（前进/后退/手动修改地址栏）
+  useEffect(() => {
+    const handleUrlChange = () => {
+      const tab = getTabFromLocation()
+      setActiveTabState(tab)
+    }
+
+    // 默认补全路由 Hash，便于收藏与刷新定位
+    if (!window.location.hash) {
+      window.location.hash = `/${getTabFromLocation()}`
+    }
+
+    window.addEventListener('hashchange', handleUrlChange)
+    window.addEventListener('popstate', handleUrlChange)
+    return () => {
+      window.removeEventListener('hashchange', handleUrlChange)
+      window.removeEventListener('popstate', handleUrlChange)
+    }
+  }, [])
 
   // Dark mode
   const [darkMode, setDarkMode] = useState(() => {
@@ -124,14 +167,14 @@ export const App: React.FC = () => {
       <div className="flex-1 flex flex-col md:flex-row w-full max-w-[1680px] mx-auto">
         <Sidebar
           activeTab={activeTab}
-          onSelectTab={setActiveTab}
+          onSelectTab={handleSelectTab}
         />
 
         {/* Tab Content Area */}
         <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-y-auto min-w-0">
           {activeTab === 'dashboard' && (
             <DashboardTab
-              onNavigate={setActiveTab}
+              onNavigate={handleSelectTab}
               onStartReprice={handleStartReprice}
               isRunning={status.is_running}
             />
@@ -143,7 +186,7 @@ export const App: React.FC = () => {
 
           {activeTab === 'sales' && <SalesTab />}
 
-          {activeTab === 'follow' && <FollowTab onNavigateLogs={() => setActiveTab('logs')} />}
+          {activeTab === 'follow' && <FollowTab onNavigateLogs={() => handleSelectTab('logs')} />}
 
           {activeTab === 'logs' && <LogsTab />}
 

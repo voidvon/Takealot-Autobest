@@ -51,7 +51,10 @@ export const api = {
     }),
 
   // Repricing Engine & Offers
-  getOffers: () => request<{ success: boolean; total: number; offers: OfferViewModel[] }>('/api/offers'),
+  getOffers: (sync = false) =>
+    request<{ success: boolean; total: number; offers: OfferViewModel[]; source?: string }>(
+      sync ? '/api/offers?sync=true' : '/api/offers'
+    ),
   saveTargets: (targets: Record<string, TargetConfig>) =>
     request<{ success: boolean; message: string }>('/api/targets', {
       method: 'POST',

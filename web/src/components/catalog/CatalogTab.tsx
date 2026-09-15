@@ -40,6 +40,7 @@ export const CatalogTab: React.FC = () => {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [pageSize] = useState(30)
+  const [searchInput, setSearchInput] = useState('')
   const [filterQuery, setFilterQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'disabled'>('all')
 
@@ -93,10 +94,18 @@ export const CatalogTab: React.FC = () => {
   // Status toggle loading state
   const [statusLoadingId, setStatusLoadingId] = useState<number | null>(null)
 
-  const loadOffers = async (targetPage = page) => {
+  // 搜索输入 400ms 防抖，避免键盘连续打字时每个字符都请求 Takealot 触发 420 限流
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setFilterQuery(searchInput.trim())
+    }, 400)
+    return () => clearTimeout(timer)
+  }, [searchInput])
+
+  const loadOffers = async (targetPage = page, query = filterQuery) => {
     setLoading(true)
     try {
-      const res = await api.getOfficialOffers(targetPage, pageSize, filterQuery)
+      const res = await api.getOfficialOffers(targetPage, pageSize, query)
       setOffers(res.offers || [])
       setTotal(res.total_results || 0)
       setPage(res.page_number || targetPage)
@@ -108,7 +117,7 @@ export const CatalogTab: React.FC = () => {
   }
 
   useEffect(() => {
-    loadOffers(1)
+    loadOffers(1, filterQuery)
   }, [filterQuery])
 
   const handleEditSubmit = async () => {
@@ -270,9 +279,14 @@ export const CatalogTab: React.FC = () => {
         <div className="relative flex-1 w-full">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
-            placeholder="搜索商品标题、SKU、TSIN 或条形码 (Barcode)..."
-            value={filterQuery}
-            onChange={(e) => setFilterQuery(e.target.value)}
+            placeholder="搜索商品标题、SKU、TSIN 或条形码 (Barcode)... (支持回车即搜)"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                setFilterQuery(searchInput.trim())
+              }
+            }}
             className="pl-9 h-9 text-xs"
           />
         </div>

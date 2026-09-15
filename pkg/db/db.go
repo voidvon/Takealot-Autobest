@@ -132,9 +132,27 @@ func (d *DB) migrate() error {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);`,
+		`CREATE TABLE IF NOT EXISTS cached_offers (
+			target_key TEXT PRIMARY KEY,
+			tsin_id TEXT,
+			plid TEXT,
+			title TEXT,
+			selling_price INTEGER DEFAULT 0,
+			rrp INTEGER DEFAULT 0,
+			stock INTEGER DEFAULT 0,
+			date_modified TEXT,
+			best_price INTEGER DEFAULT 0,
+			competing_offers INTEGER DEFAULT 0,
+			priority_status TEXT DEFAULT 'solo',
+			price_diff INTEGER DEFAULT 0,
+			image_url TEXT,
+			image_large_url TEXT,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);`,
 		`CREATE INDEX IF NOT EXISTS idx_reprice_history_created ON reprice_history(created_at DESC);`,
 		`CREATE INDEX IF NOT EXISTS idx_follow_history_created ON follow_history(created_at DESC);`,
 		`CREATE INDEX IF NOT EXISTS idx_batch_jobs_created ON batch_jobs(created_at DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_cached_offers_tsin ON cached_offers(tsin_id);`,
 	}
 
 	for _, q := range queries {
@@ -406,4 +424,128 @@ func (d *DB) GetRecentBatchJobs(limit int) ([]BatchJobRecord, error) {
 	}
 	return list, nil
 }
+
+// --- Cached Offers for 1000+ Items (Local SQLite Cache) ---
+
+type CachedOffer struct {
+	Key             string `json:"key"`
+	TSINID          string `json:"tsin_id"`
+	PLID            string `json:"plid"`
+	Title           string `json:"title"`
+	SellingPrice    int    `json:"selling_price"`
+	RRP             int    `json:"rrp"`
+	Stock           int    `json:"stock"`
+	DateModified    string `json:"date_modified"`
+	BestPrice       int    `json:"best_price"`
+	CompetingOffers int    `json:"competing_offers"`
+	PriorityStatus  string `json:"priority_status"`
+	PriceDiff       int    `json:"price_diff"`
+	ImageURL        string `json:"image_url"`
+	ImageLargeURL   string `json:"image_large_url"`
+	UpdatedAt       string `json:"updated_at"`
+}
+
+// SaveCachedOffers 批量保存/更新商品基础信息。如果已有竞品价，自动保留原竞品价，不被 0 冲掉。
+func (d *DB) SaveCachedOffers(offers []CachedOffer) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO cached_offers (
+			target_key, tsin_id, plid, title, selling_price, rrp, stock, date_modified,
+			best_price, competing_offers, priority_status, price_diff, image_url, image_large_url, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(target_key) DO UPDATE SET
+			title = excluded.title,
+			selling_price = excluded.selling_price,
+			rrp = excluded.rrp,
+			stock = excluded.stock,
+			date_modified = excluded.date_modified,
+			best_price = CASE WHEN excluded.best_price > 0 THEN excluded.best_price ELSE cached_offers.best_price END,
+			competing_offers = CASE WHEN excluded.competing_offers > 0 THEN excluded.competing_offers ELSE cached_offers.competing_offers END,
+			priority_status = CASE WHEN excluded.best_price > 0 THEN excluded.priority_status ELSE cached_offers.priority_status END,
+			price_diff = CASE WHEN excluded.best_price > 0 THEN excluded.price_diff ELSE cached_offers.price_diff END,
+			image_url = excluded.image_url,
+			image_large_url = excluded.image_large_url,
+			updated_at = CURRENT_TIMESTAMP
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, item := range offers {
+		if _, err := stmt.Exec(
+			item.Key, item.TSINID, item.PLID, item.Title, item.SellingPrice, item.RRP, item.Stock, item.DateModified,
+			item.BestPrice, item.CompetingOffers, item.PriorityStatus, item.PriceDiff, item.ImageURL, item.ImageLargeURL,
+		); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+// UpdateSingleMPV 更新单个商品的竞品最低价与购物车竞争状态
+func (d *DB) UpdateSingleMPV(tsinID string, bestPrice, competing int, priorityStatus string, priceDiff int) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	_, err := d.conn.Exec(`
+		UPDATE cached_offers
+		SET best_price = ?, competing_offers = ?, priority_status = ?, price_diff = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE tsin_id = ?
+	`, bestPrice, competing, priorityStatus, priceDiff, tsinID)
+	return err
+}
+
+// LoadCachedOffers 从本地 SQLite 加载全部缓存的商品列表（毫秒级返回）
+func (d *DB) LoadCachedOffers() ([]CachedOffer, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	rows, err := d.conn.Query(`
+		SELECT target_key, tsin_id, plid, COALESCE(title, ''), selling_price, rrp, stock,
+		       COALESCE(date_modified, ''), best_price, competing_offers, COALESCE(priority_status, 'solo'),
+		       price_diff, COALESCE(image_url, ''), COALESCE(image_large_url, ''),
+		       datetime(updated_at, 'localtime')
+		FROM cached_offers
+		ORDER BY stock DESC, selling_price DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	list := make([]CachedOffer, 0)
+	for rows.Next() {
+		var item CachedOffer
+		if err := rows.Scan(
+			&item.Key, &item.TSINID, &item.PLID, &item.Title, &item.SellingPrice, &item.RRP, &item.Stock,
+			&item.DateModified, &item.BestPrice, &item.CompetingOffers, &item.PriorityStatus,
+			&item.PriceDiff, &item.ImageURL, &item.ImageLargeURL, &item.UpdatedAt,
+		); err != nil {
+			continue
+		}
+		list = append(list, item)
+	}
+	return list, nil
+}
+
+// GetCachedOffersCount 获取当前缓存的商品总数
+func (d *DB) GetCachedOffersCount() (int, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var count int
+	err := d.conn.QueryRow(`SELECT COUNT(*) FROM cached_offers`).Scan(&count)
+	return count, err
+}
+
 

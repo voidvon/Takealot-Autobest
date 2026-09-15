@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -23,6 +24,10 @@ type Client struct {
 	mu            sync.RWMutex
 	authorization string
 	httpClient    *http.Client
+
+	rateMu      sync.Mutex
+	lastReqTime time.Time
+	minInterval time.Duration
 }
 
 func FormatAuth(auth string) string {
@@ -47,6 +52,7 @@ func NewClient(authorization string) *Client {
 				IdleConnTimeout:     90 * time.Second,
 			},
 		},
+		minInterval: 350 * time.Millisecond, // 默认全局请求间隔不少于 350ms，限制每秒发包量在安全区间
 	}
 }
 
@@ -73,6 +79,89 @@ func (c *Client) setHeaders(req *http.Request) {
 	}
 }
 
+// waitRateLimit 确保全局向 Takealot 发起的请求保持安全时间间隔，防止突发流量触发 420
+func (c *Client) waitRateLimit() {
+	c.rateMu.Lock()
+	defer c.rateMu.Unlock()
+
+	interval := c.minInterval
+	if interval <= 0 {
+		interval = 350 * time.Millisecond
+	}
+	now := time.Now()
+	elapsed := now.Sub(c.lastReqTime)
+	if elapsed < interval {
+		time.Sleep(interval - elapsed)
+	}
+	c.lastReqTime = time.Now()
+}
+
+// doRequest 封装了发包速率控制、请求头注入以及对 HTTP 420 (Rate Limit Exceeded) 的自动退避重试
+func (c *Client) doRequest(method, urlStr string, body []byte) (*http.Response, error) {
+	maxRetries := 3
+	baseDelay := 1500 * time.Millisecond
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		c.waitRateLimit()
+
+		var bodyReader io.Reader
+		if len(body) > 0 {
+			bodyReader = bytes.NewReader(body)
+		}
+
+		req, err := http.NewRequest(method, urlStr, bodyReader)
+		if err != nil {
+			return nil, err
+		}
+		c.setHeaders(req)
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			if attempt < maxRetries {
+				time.Sleep(baseDelay * time.Duration(attempt+1))
+				continue
+			}
+			return nil, err
+		}
+
+		// 重点处理 Takealot 官方特有的 HTTP 420 (Rate Limit Exceeded) 或标准 429
+		if resp.StatusCode == 420 || resp.StatusCode == 429 {
+			retryAfterSec := 0
+			if h := resp.Header.Get("Retry-After"); h != "" {
+				if s, err := strconv.Atoi(h); err == nil && s > 0 {
+					retryAfterSec = s
+				}
+			}
+			resp.Body.Close()
+
+			if attempt < maxRetries {
+				sleepDuration := baseDelay * time.Duration(attempt+1)
+				if retryAfterSec > 0 {
+					sleepDuration = time.Duration(retryAfterSec) * time.Second
+				}
+				log.Printf("⚠️ [API 限流保护] Takealot 触发频率超限 (HTTP %d)，正在休眠 %v 后进行第 %d 次自动重试: %s",
+					resp.StatusCode, sleepDuration, attempt+1, urlStr)
+				time.Sleep(sleepDuration)
+				continue
+			}
+			return nil, fmt.Errorf("HTTP %d: Rate Limit Exceeded (请求频率超限，系统已自动重试 %d 次仍受限，请稍后刷新)", resp.StatusCode, maxRetries)
+		}
+
+		// 临时服务端故障 502/503/504 自动重试
+		if resp.StatusCode == 502 || resp.StatusCode == 503 || resp.StatusCode == 504 {
+			resp.Body.Close()
+			if attempt < maxRetries {
+				time.Sleep(baseDelay * time.Duration(attempt+1))
+				continue
+			}
+			return nil, fmt.Errorf("HTTP %d: Takealot 官方服务暂时不可用，请稍后再试", resp.StatusCode)
+		}
+
+		return resp, nil
+	}
+	return nil, fmt.Errorf("request failed after %d retries", maxRetries)
+}
+
 type TestResult struct {
 	Success     bool   `json:"success"`
 	Message     string `json:"message"`
@@ -87,49 +176,37 @@ func (c *Client) TestConnection() TestResult {
 
 	// 1. Try official /v2/offers/count
 	countUrl := fmt.Sprintf("%s/v2/offers/count", SellerBaseURL)
-	reqCount, err := http.NewRequest("GET", countUrl, nil)
+	resp, err := c.doRequest("GET", countUrl, nil)
 	if err == nil {
-		c.setHeaders(reqCount)
-		resp, err := c.httpClient.Do(reqCount)
-		if err == nil {
-			defer resp.Body.Close()
-			if resp.StatusCode == 200 {
-				var data struct {
-					Count int `json:"count"`
+		defer resp.Body.Close()
+		if resp.StatusCode == 200 {
+			var data struct {
+				Count int `json:"count"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&data); err == nil {
+				return TestResult{
+					Success:     true,
+					Message:     fmt.Sprintf("连接成功！当前店铺有效商品数: %d", data.Count),
+					TotalOffers: data.Count,
 				}
-				if err := json.NewDecoder(resp.Body).Decode(&data); err == nil {
-					return TestResult{
-						Success:     true,
-						Message:     fmt.Sprintf("连接成功！当前店铺有效商品数: %d", data.Count),
-						TotalOffers: data.Count,
-					}
-				}
-			} else if resp.StatusCode == 401 || resp.StatusCode == 403 {
-				return TestResult{Success: false, Message: fmt.Sprintf("授权认证失败 (HTTP %d)，API Key 可能失效或前缀格式不正确", resp.StatusCode)}
 			}
 		}
 	}
 
 	// 2. Fallback to /v2/offers/detailed
 	url := fmt.Sprintf("%s/v2/offers/detailed?page_number=1&page_size=1&status_ids=1&status_ids=2", SellerBaseURL)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return TestResult{Success: false, Message: err.Error()}
-	}
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
+	respDet, err := c.doRequest("GET", url, nil)
 	if err != nil {
 		return TestResult{Success: false, Message: fmt.Sprintf("网络连接失败: %v", err)}
 	}
-	defer resp.Body.Close()
+	defer respDet.Body.Close()
 
-	if resp.StatusCode == 200 {
+	if respDet.StatusCode == 200 {
 		var data struct {
 			Total  int   `json:"total"`
 			Offers []any `json:"offers"`
 		}
-		_ = json.NewDecoder(resp.Body).Decode(&data)
+		_ = json.NewDecoder(respDet.Body).Decode(&data)
 		total := data.Total
 		if total == 0 {
 			total = len(data.Offers)
@@ -139,10 +216,10 @@ func (c *Client) TestConnection() TestResult {
 			Message:     fmt.Sprintf("连接成功！当前店铺有效商品数: %d", total),
 			TotalOffers: total,
 		}
-	} else if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		return TestResult{Success: false, Message: fmt.Sprintf("授权认证失败 (HTTP %d)，Token 或 API Key 可能已失效", resp.StatusCode)}
+	} else if respDet.StatusCode == 401 || respDet.StatusCode == 403 {
+		return TestResult{Success: false, Message: fmt.Sprintf("授权认证失败 (HTTP %d)，Token 或 API Key 可能已失效", respDet.StatusCode)}
 	}
-	return TestResult{Success: false, Message: fmt.Sprintf("接口返回异常状态码: HTTP %d", resp.StatusCode)}
+	return TestResult{Success: false, Message: fmt.Sprintf("接口返回异常状态码: HTTP %d", respDet.StatusCode)}
 }
 
 func AnyToString(v any) string {
@@ -216,31 +293,24 @@ func (c *Client) GetOffersPage(page, pageSize int, tsinID string) (*OffersRespon
 		url += fmt.Sprintf("&tsin_id=%s", tsinID)
 	}
 
-	for attempt := 0; attempt < 3; attempt++ {
-		req, err := http.NewRequest("GET", url, nil)
-		if err != nil {
-			return nil, err
-		}
-		c.setHeaders(req)
-
-		resp, err := c.httpClient.Do(req)
-		if err == nil {
-			defer resp.Body.Close()
-			if resp.StatusCode == 200 {
-				var result OffersResponse
-				if err := json.NewDecoder(resp.Body).Decode(&result); err == nil {
-					return &result, nil
-				} else {
-					fmt.Printf("❌ JSON decode error: %v\n", err)
-				}
-			} else {
-				respBytes, _ := io.ReadAll(resp.Body)
-				fmt.Printf("⚠️ Offers page HTTP %d: %s\n", resp.StatusCode, string(respBytes))
-			}
-		}
-		time.Sleep(1 * time.Second)
+	resp, err := c.doRequest("GET", url, nil)
+	if err != nil {
+		return &OffersResponse{}, err
 	}
-	return &OffersResponse{}, nil
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 200 {
+		var result OffersResponse
+		if err := json.NewDecoder(resp.Body).Decode(&result); err == nil {
+			return &result, nil
+		} else {
+			fmt.Printf("❌ JSON decode error: %v\n", err)
+			return &OffersResponse{}, err
+		}
+	}
+	respBytes, _ := io.ReadAll(resp.Body)
+	fmt.Printf("⚠️ Offers page HTTP %d: %s\n", resp.StatusCode, string(respBytes))
+	return &OffersResponse{}, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBytes))
 }
 
 func (c *Client) GetAllOffers(maxItems int) ([]OfferItem, error) {
@@ -297,28 +367,19 @@ type MPVResult struct {
 
 func (c *Client) GetMPVByTSIN(tsinID string) (*MPVResult, error) {
 	url := fmt.Sprintf("%s/1/catalogue/mpv/search?search_by=tsin&search_query=%s", SellerBaseURL, tsinID)
+	resp, err := c.doRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
 
-	for attempt := 0; attempt < 3; attempt++ {
-		req, err := http.NewRequest("GET", url, nil)
-		if err != nil {
-			return nil, err
+	if resp.StatusCode == 200 {
+		var data struct {
+			Results []MPVResult `json:"results"`
 		}
-		c.setHeaders(req)
-
-		resp, err := c.httpClient.Do(req)
-		if err == nil && resp.StatusCode == 200 {
-			defer resp.Body.Close()
-			var data struct {
-				Results []MPVResult `json:"results"`
-			}
-			if err := json.NewDecoder(resp.Body).Decode(&data); err == nil && len(data.Results) > 0 {
-				return &data.Results[0], nil
-			}
+		if err := json.NewDecoder(resp.Body).Decode(&data); err == nil && len(data.Results) > 0 {
+			return &data.Results[0], nil
 		}
-		if resp != nil {
-			resp.Body.Close()
-		}
-		time.Sleep(1 * time.Second)
 	}
 	return nil, fmt.Errorf("mpv not found")
 }
@@ -327,27 +388,19 @@ func (c *Client) GetMPVByPLID(plid string) ([]MPVResult, error) {
 	cleanPLID := strings.TrimSpace(strings.ReplaceAll(strings.ToUpper(plid), "PLID", ""))
 	url := fmt.Sprintf("%s/1/catalogue/mpv/search?search_by=plid&search_query=%s", SellerBaseURL, cleanPLID)
 
-	for attempt := 0; attempt < 3; attempt++ {
-		req, err := http.NewRequest("GET", url, nil)
-		if err != nil {
-			return nil, err
-		}
-		c.setHeaders(req)
+	resp, err := c.doRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
 
-		resp, err := c.httpClient.Do(req)
-		if err == nil && resp.StatusCode == 200 {
-			defer resp.Body.Close()
-			var data struct {
-				Results []MPVResult `json:"results"`
-			}
-			if err := json.NewDecoder(resp.Body).Decode(&data); err == nil {
-				return data.Results, nil
-			}
+	if resp.StatusCode == 200 {
+		var data struct {
+			Results []MPVResult `json:"results"`
 		}
-		if resp != nil {
-			resp.Body.Close()
+		if err := json.NewDecoder(resp.Body).Decode(&data); err == nil {
+			return data.Results, nil
 		}
-		time.Sleep(1 * time.Second)
 	}
 	return nil, fmt.Errorf("mpv query failed")
 }
@@ -356,13 +409,7 @@ func (c *Client) GetPublicPrice(plid string) int {
 	cleanPLID := strings.TrimSpace(strings.ReplaceAll(strings.ToUpper(plid), "PLID", ""))
 	url := fmt.Sprintf("%s/rest/v-1-16-0/product-details/PLID%s", PublicBaseURL, cleanPLID)
 
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return 0
-	}
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest("GET", url, nil)
 	if err != nil || resp.StatusCode != 200 {
 		if resp != nil {
 			resp.Body.Close()
@@ -394,25 +441,17 @@ func (c *Client) UpdateOfferPrice(offerID string, sellingPrice, rrp int) error {
 	}
 	body, _ := json.Marshal(payload)
 
-	for attempt := 0; attempt < 3; attempt++ {
-		req, err := http.NewRequest("PATCH", url, bytes.NewReader(body))
-		if err != nil {
-			return err
-		}
-		c.setHeaders(req)
-
-		resp, err := c.httpClient.Do(req)
-		if err == nil {
-			defer resp.Body.Close()
-			if resp.StatusCode == 200 || resp.StatusCode == 204 {
-				return nil
-			}
-			respBytes, _ := io.ReadAll(resp.Body)
-			return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBytes))
-		}
-		time.Sleep(1 * time.Second)
+	resp, err := c.doRequest("PATCH", url, body)
+	if err != nil {
+		return err
 	}
-	return fmt.Errorf("request timed out after 3 retries")
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 200 || resp.StatusCode == 204 {
+		return nil
+	}
+	respBytes, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBytes))
 }
 
 func (c *Client) CreateOffer(gtin string, sellingPrice, rrp, leadtimeDays int) error {
@@ -424,25 +463,17 @@ func (c *Client) CreateOffer(gtin string, sellingPrice, rrp, leadtimeDays int) e
 	}
 	body, _ := json.Marshal(payload)
 
-	for attempt := 0; attempt < 3; attempt++ {
-		req, err := http.NewRequest("POST", url, bytes.NewReader(body))
-		if err != nil {
-			return err
-		}
-		c.setHeaders(req)
-
-		resp, err := c.httpClient.Do(req)
-		if err == nil {
-			defer resp.Body.Close()
-			if resp.StatusCode == 200 || resp.StatusCode == 201 {
-				return nil
-			}
-			respBytes, _ := io.ReadAll(resp.Body)
-			return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBytes))
-		}
-		time.Sleep(1 * time.Second)
+	resp, err := c.doRequest("POST", url, body)
+	if err != nil {
+		return err
 	}
-	return fmt.Errorf("request timed out after 3 retries")
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 200 || resp.StatusCode == 201 {
+		return nil
+	}
+	respBytes, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBytes))
 }
 
 // --- Official Takealot Seller API V2 / V1 Methods ---
@@ -498,13 +529,7 @@ func (c *Client) GetOfficialOffers(page, pageSize int, filter string) (*Official
 		url += fmt.Sprintf("&filter=%s", filter)
 	}
 
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -528,13 +553,7 @@ func (c *Client) GetOfficialOffers(page, pageSize int, filter string) (*Official
 
 func (c *Client) GetOfficialOffersCount() (int, error) {
 	url := fmt.Sprintf("%s/v2/offers/count", SellerBaseURL)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return 0, err
-	}
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest("GET", url, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -557,13 +576,7 @@ func (c *Client) UpdateSingleOffer(offerID string, payload map[string]any) error
 	url := fmt.Sprintf("%s/v2/offers/offer/%s", SellerBaseURL, offerID)
 	body, _ := json.Marshal(payload)
 
-	req, err := http.NewRequest("PATCH", url, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest("PATCH", url, body)
 	if err != nil {
 		return err
 	}
@@ -617,13 +630,7 @@ func (c *Client) GetSales(page, pageSize int, startDate, endDate string) (*Sales
 		url += fmt.Sprintf("&end_date=%s", endDate)
 	}
 
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -649,13 +656,7 @@ type SalesSummaryItem struct {
 
 func (c *Client) GetSalesSummary() ([]SalesSummaryItem, error) {
 	url := fmt.Sprintf("%s/v2/sales/summary", SellerBaseURL)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -713,13 +714,7 @@ func (c *Client) GetSalesOrders(startDate, endDate string, page, pageSize int) (
 	url := fmt.Sprintf("%s/v1/sales/orders?start_date=%s&end_date=%s&page_number=%d&page_size=%d",
 		SellerBaseURL, startDate, endDate, page, pageSize)
 
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -748,13 +743,7 @@ type InvoiceDocument struct {
 
 func (c *Client) GetCustomerInvoices(orderID int64) ([]InvoiceDocument, error) {
 	url := fmt.Sprintf("%s/v1/sales/orders/%d/customer_invoices", SellerBaseURL, orderID)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -780,13 +769,7 @@ type StockCounts struct {
 
 func (c *Client) GetStockCounts() (*StockCounts, error) {
 	url := fmt.Sprintf("%s/v2/offers/stock_counts", SellerBaseURL)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -810,13 +793,7 @@ type StockHealthStats struct {
 
 func (c *Client) GetStockHealthStats() (*StockHealthStats, error) {
 	url := fmt.Sprintf("%s/v2/offers/stock_health_stats", SellerBaseURL)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -836,13 +813,7 @@ func (c *Client) GetStockHealthStats() (*StockHealthStats, error) {
 // GetOfficialSingleOffer retrieves a single offer by identifier (Offer ID, BARCODE..., or SKU...)
 func (c *Client) GetOfficialSingleOffer(identifier string) (map[string]any, error) {
 	url := fmt.Sprintf("%s/v2/offers/offer/%s", SellerBaseURL, identifier)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -865,13 +836,7 @@ func (c *Client) CreateOfficialSingleOffer(barcode string, payload map[string]an
 	url := fmt.Sprintf("%s/v2/offers/offer?identifier=%s", SellerBaseURL, barcode)
 	body, _ := json.Marshal(payload)
 
-	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest("POST", url, body)
 	if err != nil {
 		return nil, err
 	}
@@ -902,13 +867,7 @@ func (c *Client) CreateOfficialBatch(offers []any) (map[string]any, error) {
 	url := fmt.Sprintf("%s/v2/offers/batch", SellerBaseURL)
 	body, _ := json.Marshal(offers)
 
-	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest("POST", url, body)
 	if err != nil {
 		return nil, err
 	}
@@ -929,13 +888,7 @@ func (c *Client) CreateOfficialBatch(offers []any) (map[string]any, error) {
 // GetOfficialBatch queries the status and validation errors of a submitted batch
 func (c *Client) GetOfficialBatch(batchID string) (map[string]any, error) {
 	url := fmt.Sprintf("%s/v2/offers/batch/%s", SellerBaseURL, batchID)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}

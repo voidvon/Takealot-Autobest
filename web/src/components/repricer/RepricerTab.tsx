@@ -21,10 +21,12 @@ import {
   ImageIcon,
   ShieldAlert,
   History,
+  CloudDownload,
 } from 'lucide-react'
 
 export const RepricerTab: React.FC = () => {
   const [loading, setLoading] = useState(false)
+  const [syncing, setSyncing] = useState(false)
   const [offers, setOffers] = useState<OfferViewModel[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | PriorityStatus | 'selected'>('all')
@@ -50,15 +52,16 @@ export const RepricerTab: React.FC = () => {
     saving?: boolean
   }>({ open: false })
 
-  // SQLite Reprice History Modal state
+  // History modal state
   const [historyModal, setHistoryModal] = useState<{
     open: boolean
-    records: import('../../types').RepriceHistoryRecord[]
+    records: any[]
     loading?: boolean
+    title?: string
   }>({ open: false, records: [] })
 
   const loadHistory = async () => {
-    setHistoryModal({ open: true, records: [], loading: true })
+    setHistoryModal((prev) => ({ ...prev, open: true, loading: true }))
     try {
       const list = await api.getRepriceHistory(100)
       setHistoryModal({ open: true, records: list || [], loading: false })
@@ -68,10 +71,11 @@ export const RepricerTab: React.FC = () => {
     }
   }
 
-  const loadOffers = async () => {
-    setLoading(true)
+  const loadOffers = async (sync = false) => {
+    if (sync) setSyncing(true)
+    else setLoading(true)
     try {
-      const res = await api.getOffers()
+      const res = await api.getOffers(sync)
       if (res.success && res.offers) {
         setOffers(res.offers)
         setHasChanges(false)
@@ -80,11 +84,12 @@ export const RepricerTab: React.FC = () => {
       alert(`获取调价商品列表失败: ${err.message}`)
     } finally {
       setLoading(false)
+      setSyncing(false)
     }
   }
 
   useEffect(() => {
-    loadOffers()
+    loadOffers(false)
   }, [])
 
   // Filter & Search
@@ -204,11 +209,15 @@ export const RepricerTab: React.FC = () => {
         <div className="flex items-center gap-2.5">
           <Button variant="outline" size="sm" onClick={loadHistory} className="gap-1.5 text-xs">
             <History className="h-3.5 w-3.5 text-primary" />
-            <span>调价历史 (SQLite)</span>
+            <span>调价历史</span>
           </Button>
-          <Button variant="outline" size="sm" onClick={loadOffers} loading={loading} className="gap-1.5">
+          <Button variant="outline" size="sm" onClick={() => loadOffers(false)} loading={loading} className="gap-1.5 text-xs">
             <RefreshCw className="h-3.5 w-3.5" />
-            <span>重新载入</span>
+            <span>刷新列表 (毫秒级)</span>
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => loadOffers(true)} loading={syncing} className="gap-1.5 text-xs border-primary/40 text-primary hover:bg-primary/5">
+            <CloudDownload className="h-3.5 w-3.5" />
+            <span>从店铺全量同步商品</span>
           </Button>
           <Button
             variant={hasChanges ? 'default' : 'secondary'}

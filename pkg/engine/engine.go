@@ -265,6 +265,45 @@ func (e *Engine) executeRepriceCycle(ctx context.Context) {
 	increaseStep := cfg.PriceIncreaseStep
 	rrpRatio := cfg.RRPPercentage / 100.0
 
+	// 1. 批量拉取自身商品在售状态（1000件商品仅需10次请求，省去原先循环中1000次单品请求）
+	maxFetch := cfg.MaxFetchOffers
+	if maxFetch < len(activeTargets) {
+		maxFetch = len(activeTargets) + 200
+	}
+	if maxFetch <= 0 {
+		maxFetch = 1500
+	}
+
+	offerMap := make(map[string]api.OfferItem)
+	rawOffers, err := e.api.GetAllOffers(maxFetch)
+	if err == nil && len(rawOffers) > 0 {
+		cachedItems := make([]db.CachedOffer, 0, len(rawOffers))
+		for _, o := range rawOffers {
+			tsinStr := strconv.FormatInt(o.TSINID, 10)
+			offerMap[tsinStr] = o
+			plidStr := api.AnyToString(o.TSIN.ProductlineID)
+			cachedItems = append(cachedItems, db.CachedOffer{
+				Key:             fmt.Sprintf("%s/%s", tsinStr, plidStr),
+				TSINID:          tsinStr,
+				PLID:            plidStr,
+				Title:           o.TSIN.Title,
+				SellingPrice:    int(o.SellingPrice),
+				RRP:             int(o.RRP),
+				Stock:           o.TotalMerchantStock,
+				DateModified:    o.DateModified,
+				BestPrice:       0,
+				CompetingOffers: 1,
+				PriorityStatus:  "solo",
+				PriceDiff:       0,
+				ImageURL:        o.TSIN.ImageURL,
+				ImageLargeURL:   api.GetLargeImageURL(o.TSIN.ImageURL),
+			})
+		}
+		if e.db != nil {
+			_ = e.db.SaveCachedOffers(cachedItems)
+		}
+	}
+
 	for key, target := range activeTargets {
 		select {
 		case <-ctx.Done():
@@ -295,40 +334,70 @@ func (e *Engine) executeRepriceCycle(ctx context.Context) {
 		}
 		minPrice := target.MinPrice
 
-		// 1. Fetch current offer status
-		offerResp, err := e.api.GetOffersPage(1, 1, tsinID)
-		if err != nil || len(offerResp.Offers) == 0 {
-			continue
-		}
+		// 1. 获取商品当前自身价格（优先内存 Map，未命中才调单品接口）
+		var curPrice int
+		var offerID string
+		var title string
 
-		curOffer := offerResp.Offers[0]
-		offerID := strconv.FormatInt(curOffer.OfferID, 10)
-		curPrice := int(curOffer.SellingPrice)
-		title := curOffer.TSIN.Title
+		if o, ok := offerMap[tsinID]; ok {
+			offerID = strconv.FormatInt(o.OfferID, 10)
+			curPrice = int(o.SellingPrice)
+			title = o.TSIN.Title
+		} else {
+			offerResp, err := e.api.GetOffersPage(1, 1, tsinID)
+			if err != nil || len(offerResp.Offers) == 0 {
+				continue
+			}
+			curOffer := offerResp.Offers[0]
+			offerID = strconv.FormatInt(curOffer.OfferID, 10)
+			curPrice = int(curOffer.SellingPrice)
+			title = curOffer.TSIN.Title
+		}
 
 		e.mu.Lock()
 		e.totalChecked++
 		e.mu.Unlock()
 
-		// 2. Query competitor bestPrice from MPV catalog
+		// 2. 查询竞品最新价格 (MPV)
 		mpv, err := e.api.GetMPVByTSIN(tsinID)
 		bestPrice := 0
+		competing := 1
 		if err == nil && mpv != nil {
 			bestPrice = int(mpv.BestPrice)
+			competing = api.AnyToInt(mpv.CompetingOffers)
 		}
 
-		// Fallback to public price if MPV bestPrice is 0
+		// 备选公开价格兜底
 		if bestPrice <= 0 && plid != "" {
 			bestPrice = e.api.GetPublicPrice(plid)
 		}
 
+		// 计算竞争状态并立即写入本地 SQLite 缓存，让前端页面随时展示最新战况
+		priority := "solo"
+		diff := 0
+		if competing > 1 {
+			if bestPrice > 0 {
+				if curPrice <= bestPrice {
+					priority = "winning"
+				} else {
+					priority = "losing"
+					diff = curPrice - bestPrice
+				}
+			} else {
+				priority = "winning"
+			}
+		}
+		if e.db != nil && bestPrice > 0 {
+			_ = e.db.UpdateSingleMPV(tsinID, bestPrice, competing, priority, diff)
+		}
+
 		if bestPrice <= 0 {
 			e.Log(fmt.Sprintf("[%s] 未获取到竞品价格 (TSIN: %s)", truncate(title, 20), tsinID), "DEBUG")
-			time.Sleep(1500 * time.Millisecond)
+			time.Sleep(300 * time.Millisecond)
 			continue
 		}
 
-		// 3. Repricing Decision
+		// 3. 调价决策逻辑
 		newPrice := -1
 		actionDesc := ""
 
@@ -347,7 +416,7 @@ func (e *Engine) executeRepriceCycle(ctx context.Context) {
 			}
 		}
 
-		// 4. Update if price changed
+		// 4. 执行更新
 		if newPrice > 0 && newPrice != curPrice {
 			rrp := int(float64(newPrice) * rrpRatio)
 			if err := e.api.UpdateOfferPrice(offerID, newPrice, rrp); err == nil {
@@ -356,6 +425,7 @@ func (e *Engine) executeRepriceCycle(ctx context.Context) {
 				e.mu.Unlock()
 				if e.db != nil {
 					_ = e.db.RecordReprice(key, tsinID, title, curPrice, newPrice, bestPrice, actionDesc)
+					_ = e.db.UpdateSingleMPV(tsinID, bestPrice, competing, "winning", 0)
 				}
 				e.Log(fmt.Sprintf("✅ [调价成功] %s... (TSIN:%s) | 原价: R%d -> 新价: R%d (RRP: R%d) | 原因: %s",
 					truncate(title, 22), tsinID, curPrice, newPrice, rrp, actionDesc), "SUCCESS")
@@ -367,7 +437,7 @@ func (e *Engine) executeRepriceCycle(ctx context.Context) {
 				truncate(title, 20), curPrice, bestPrice, minPrice), "DEBUG")
 		}
 
-		time.Sleep(2 * time.Second)
+		time.Sleep(300 * time.Millisecond)
 	}
 
 	e.mu.RLock()

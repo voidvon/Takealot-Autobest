@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/xuri/excelize/v2"
 	"takealot/pkg/api"
@@ -190,6 +189,48 @@ func (s *Server) handleOffers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := s.cfgMgr.Get()
+	targets := cfg.Targets
+	forceSync := r.URL.Query().Get("sync") == "true"
+
+	// 1. 优先从本地 SQLite 秒级读取（彻底消除打开页面发起 1000 次 API 的性能与限流问题）
+	if !forceSync && s.db != nil {
+		cached, err := s.db.LoadCachedOffers()
+		if err == nil && len(cached) > 0 {
+			parsed := make([]OfferViewModel, 0, len(cached))
+			for _, c := range cached {
+				targetInfo := targets[c.Key]
+				parsed = append(parsed, OfferViewModel{
+					Key:             c.Key,
+					TSINID:          c.TSINID,
+					PLID:            c.PLID,
+					Title:           c.Title,
+					SellingPrice:    c.SellingPrice,
+					RRP:             c.RRP,
+					Stock:           c.Stock,
+					DateModified:    c.DateModified,
+					Selected:        targetInfo.Selected,
+					MinPrice:        targetInfo.MinPrice,
+					MaxPrice:        targetInfo.MaxPrice,
+					BestPrice:       c.BestPrice,
+					CompetingOffers: c.CompetingOffers,
+					PriorityStatus:  c.PriorityStatus,
+					PriceDiff:       c.PriceDiff,
+					ImageURL:        c.ImageURL,
+					ImageLargeURL:   c.ImageLargeURL,
+				})
+			}
+			jsonResponse(w, http.StatusOK, map[string]any{
+				"success": true,
+				"total":   len(parsed),
+				"offers":  parsed,
+				"source":  "cache",
+			})
+			return
+		}
+	}
+
+	// 2. 本地尚无缓存或用户主动请求同步（sync=true）：
+	// 使用高效的分页批量拉取（1000 件商品仅需 10 次分页请求，约 2~3 秒完成）
 	maxFetch := cfg.MaxFetchOffers
 	if maxFetch <= 0 {
 		maxFetch = 1000
@@ -203,92 +244,70 @@ func (s *Server) handleOffers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch MPV BestPrice and Competing Offers concurrently
-	type mpvData struct {
-		bestPrice int
-		competing int
-	}
-	mpvMap := make(map[string]mpvData)
-	var mpvMu sync.Mutex
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 6)
-
-	for _, item := range rawOffers {
-		wg.Add(1)
-		go func(tsinStr string) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			mpv, err := s.api.GetMPVByTSIN(tsinStr)
-			if err == nil && mpv != nil {
-				mpvMu.Lock()
-				mpvMap[tsinStr] = mpvData{
-					bestPrice: int(mpv.BestPrice),
-					competing: api.AnyToInt(mpv.CompetingOffers),
-				}
-				mpvMu.Unlock()
-			}
-		}(strconv.FormatInt(item.TSINID, 10))
-	}
-	wg.Wait()
-
-	targets := cfg.Targets
-	parsed := make([]OfferViewModel, 0, len(rawOffers))
-
+	cachedItems := make([]db.CachedOffer, 0, len(rawOffers))
 	for _, item := range rawOffers {
 		tsinStr := strconv.FormatInt(item.TSINID, 10)
 		plidStr := api.AnyToString(item.TSIN.ProductlineID)
 		key := fmt.Sprintf("%s/%s", tsinStr, plidStr)
-		targetInfo := targets[key]
 
-		myPrice := int(item.SellingPrice)
-		mpvInfo := mpvMap[tsinStr]
-		bestPrice := mpvInfo.bestPrice
-		competing := mpvInfo.competing
-		priority := "solo"
-		diff := 0
-
-		if competing > 1 {
-			if bestPrice > 0 {
-				if myPrice <= bestPrice {
-					priority = "winning"
-				} else {
-					priority = "losing"
-					diff = myPrice - bestPrice
-				}
-			} else {
-				priority = "winning"
-			}
-		} else {
-			priority = "solo"
-		}
-
-		parsed = append(parsed, OfferViewModel{
+		cachedItems = append(cachedItems, db.CachedOffer{
 			Key:             key,
 			TSINID:          tsinStr,
 			PLID:            plidStr,
 			Title:           item.TSIN.Title,
-			SellingPrice:    myPrice,
+			SellingPrice:    int(item.SellingPrice),
 			RRP:             int(item.RRP),
 			Stock:           item.TotalMerchantStock,
 			DateModified:    item.DateModified,
-			Selected:        targetInfo.Selected,
-			MinPrice:        targetInfo.MinPrice,
-			MaxPrice:        targetInfo.MaxPrice,
-			BestPrice:       bestPrice,
-			CompetingOffers: competing,
-			PriorityStatus:  priority,
-			PriceDiff:       diff,
+			BestPrice:       0,
+			CompetingOffers: 1,
+			PriorityStatus:  "solo",
+			PriceDiff:       0,
 			ImageURL:        item.TSIN.ImageURL,
 			ImageLargeURL:   api.GetLargeImageURL(item.TSIN.ImageURL),
 		})
+	}
+
+	// 持久化到 SQLite（内部自动保留已有的竞品价格）
+	if s.db != nil {
+		_ = s.db.SaveCachedOffers(cachedItems)
+	}
+
+	// 从本地 SQLite 重载并组装返回，保证数据完整性
+	var parsed []OfferViewModel
+	if s.db != nil {
+		if reloaded, err := s.db.LoadCachedOffers(); err == nil && len(reloaded) > 0 {
+			parsed = make([]OfferViewModel, 0, len(reloaded))
+			for _, c := range reloaded {
+				targetInfo := targets[c.Key]
+				parsed = append(parsed, OfferViewModel{
+					Key:             c.Key,
+					TSINID:          c.TSINID,
+					PLID:            c.PLID,
+					Title:           c.Title,
+					SellingPrice:    c.SellingPrice,
+					RRP:             c.RRP,
+					Stock:           c.Stock,
+					DateModified:    c.DateModified,
+					Selected:        targetInfo.Selected,
+					MinPrice:        targetInfo.MinPrice,
+					MaxPrice:        targetInfo.MaxPrice,
+					BestPrice:       c.BestPrice,
+					CompetingOffers: c.CompetingOffers,
+					PriorityStatus:  c.PriorityStatus,
+					PriceDiff:       c.PriceDiff,
+					ImageURL:        c.ImageURL,
+					ImageLargeURL:   c.ImageLargeURL,
+				})
+			}
+		}
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]any{
 		"success": true,
 		"total":   len(parsed),
 		"offers":  parsed,
+		"source":  "live_sync",
 	})
 }
 

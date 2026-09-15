@@ -87,11 +87,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {navItems.map((item) => {
               const isActive = activeTab === item.id
               return (
-                <button
+                <a
                   key={item.id}
-                  onClick={() => onSelectTab(item.id)}
+                  href={`#/${item.id}`}
+                  onClick={(e) => {
+                    // 若按住 Cmd/Ctrl 键点击则允许在新标签页打开
+                    if (!e.metaKey && !e.ctrlKey) {
+                      e.preventDefault()
+                      onSelectTab(item.id)
+                    }
+                  }}
                   className={cn(
-                    "w-full flex items-center justify-between gap-2.5 rounded-md px-2.5 py-2 text-xs font-medium transition-colors text-left select-none cursor-pointer",
+                    "w-full flex items-center justify-between gap-2.5 rounded-md px-2.5 py-2 text-xs font-medium transition-colors text-left select-none cursor-pointer no-underline",
                     isActive
                       ? "bg-accent text-accent-foreground font-semibold shadow-xs"
                       : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
@@ -109,7 +116,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       {item.badge}
                     </Badge>
                   )}
-                </button>
+                </a>
               )
             })}
           </nav>
