@@ -4,6 +4,9 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -205,6 +208,62 @@ func (d *DB) LoadTargets() (map[string]config.Target, error) {
 		}
 	}
 	return res, nil
+}
+
+func (d *DB) CountTargets() (int, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var count int
+	err := d.conn.QueryRow(`SELECT count(*) FROM reprice_targets`).Scan(&count)
+	return count, err
+}
+
+// MigrateGJData checks if legacy GJDATA file exists. If found, it parses and imports
+// all target records into SQLite `reprice_targets` table, and renames the legacy file
+// to .migrated.bak to preserve a safe backup while preventing re-migration.
+func (d *DB) MigrateGJData(filePath string) (int, error) {
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		return 0, nil
+	}
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return 0, fmt.Errorf("读取旧版 GJDATA 失败: %w", err)
+	}
+
+	content := strings.TrimSpace(string(data))
+	targets := make(map[string]config.Target)
+	if len(content) > 0 {
+		items := strings.Split(content, "#")
+		for _, item := range items {
+			parts := strings.Split(strings.TrimSpace(item), "/")
+			if len(parts) >= 5 {
+				key := fmt.Sprintf("%s/%s", parts[0], parts[1])
+				minP, _ := strconv.Atoi(parts[3])
+				maxP, _ := strconv.Atoi(parts[4])
+				targets[key] = config.Target{
+					Selected: parts[2] == "1",
+					MinPrice: minP,
+					MaxPrice: maxP,
+				}
+			}
+		}
+	}
+
+	if len(targets) > 0 {
+		if err := d.SaveTargets(targets); err != nil {
+			return 0, fmt.Errorf("将迁移数据写入 SQLite reprice_targets 失败: %w", err)
+		}
+	}
+
+	// Rename legacy file to .migrated.bak for backup
+	bakFile := filePath + ".migrated.bak"
+	if err := os.Rename(filePath, bakFile); err != nil {
+		_ = os.Remove(bakFile)
+		_ = os.Rename(filePath, bakFile)
+	}
+
+	return len(targets), nil
 }
 
 // --- Reprice History in SQLite ---

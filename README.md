@@ -9,8 +9,8 @@
 1. **单文件零依赖**：基于 Go 语言原生开发，通过 `//go:embed` 将前端控制台直接编译进二进制，无需安装 Python、Node.js 或 .NET 运行时环境。
 2. **极速启动与低资源占用**：内存占用仅约 15MB ~ 25MB，比原版 Chromium 内嵌方案轻量 95% 以上，适合在 Mac 或低配 Linux VPS 上 7x24 小时静默运行。
 3. **高并发与稳定调度**：采用 Goroutine 异步调度，支持毫秒级任务响应与 SSE 实时控制台日志推流。
-4. **完整业务兼容**：
-   - 自动读取并双向同步兼容原有的 [`GJDATA`](file:///Users/voidvon/Desktop/output/GJDATA)（商品监控底价）与 [`can.ini`](file:///Users/voidvon/Desktop/output/can.ini) 配置。
+4. **全面 SQLite 本地数据库**：
+   - 商品监控底价及调价/跟卖历史全面升级为 SQLite (`takealot.db`) 存储；内置旧版 [`GJDATA`](file:///Users/voidvon/Desktop/output/GJDATA) 自动无缝迁移机制。
    - 原生兼容 [`待上传摸板.xlsx`](file:///Users/voidvon/Desktop/output/待上传摸板.xlsx) 表格拖拽批量解析与跟卖上架。
 
 ---

@@ -40,25 +40,44 @@ func main() {
 	log.Printf("🚀 正在启动 Takealot 自动化控制中心 (v%s - Go 原生跨平台版)", Version)
 	log.Println("========================================================")
 
-	// 1. Initialize SQLite Database
+	// 1. Initialize SQLite Database & Migrate Legacy Data
 	database, err := db.New("takealot.db")
 	if err != nil {
 		log.Printf("⚠️ SQLite 初始化提示: %v", err)
 	} else {
 		defer database.Close()
+
+		// 自动检测并迁移旧版 GJDATA 到 SQLite
+		if count, err := database.MigrateGJData("GJDATA"); err != nil {
+			log.Printf("⚠️ 迁移旧版 GJDATA 失败: %v", err)
+		} else if count > 0 {
+			log.Printf("📦 成功将旧版 GJDATA 中的 %d 条商品监控数据迁移至 SQLite (takealot.db)，原文件已备份为 GJDATA.migrated.bak", count)
+		}
 	}
 
 	// 2. Initialize Configuration Manager
 	cfgMgr := config.NewManager(".")
 	cfg := cfgMgr.Get()
 
-	// 3. Initialize Takealot API Client
+	// 3. 监控商品双向同步保证 SQLite 持久化
+	if database != nil {
+		dbTargets, err := database.LoadTargets()
+		if err == nil && len(dbTargets) > 0 {
+			_ = cfgMgr.UpdateTargets(dbTargets)
+		} else if len(cfg.Targets) > 0 {
+			if err := database.SaveTargets(cfg.Targets); err == nil {
+				log.Printf("📦 已将现有配置中的 %d 条商品监控数据导入 SQLite", len(cfg.Targets))
+			}
+		}
+	}
+
+	// 4. Initialize Takealot API Client
 	apiClient := api.NewClient(cfg.Authorization)
 
-	// 4. Initialize Automation Engine
+	// 5. Initialize Automation Engine
 	eng := engine.NewEngine(cfgMgr, apiClient, database)
 
-	// 5. Initialize HTTP Server
+	// 6. Initialize HTTP Server
 	distSubFS, _ := fs.Sub(distEmbedFS, "web/dist")
 	srv := server.NewServer(cfgMgr, apiClient, eng, database, distSubFS, staticHTML, Version)
 

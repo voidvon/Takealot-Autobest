@@ -2,7 +2,6 @@ package config
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -10,9 +9,8 @@ import (
 )
 
 const (
-	ConfigFile    = "config.json"
-	LegacyCanIni  = "can.ini"
-	LegacyGJData  = "GJDATA"
+	ConfigFile   = "config.json"
+	LegacyCanIni = "can.ini"
 )
 
 type Target struct {
@@ -96,27 +94,6 @@ func (m *Manager) Load() {
 		}
 	}
 
-	// 3. Fallback to GJDATA
-	if gjData, err := os.ReadFile(LegacyGJData); err == nil {
-		content := strings.TrimSpace(string(gjData))
-		if len(content) > 0 {
-			items := strings.Split(content, "#")
-			for _, item := range items {
-				parts := strings.Split(strings.TrimSpace(item), "/")
-				if len(parts) >= 5 {
-					key := fmt.Sprintf("%s/%s", parts[0], parts[1])
-					minP, _ := strconv.Atoi(parts[3])
-					maxP, _ := strconv.Atoi(parts[4])
-					m.cfg.Targets[key] = Target{
-						Selected: parts[2] == "1",
-						MinPrice: minP,
-						MaxPrice: maxP,
-					}
-				}
-			}
-		}
-	}
-
 	// Save migrated config immediately
 	m.saveLocked()
 }
@@ -176,24 +153,5 @@ func (m *Manager) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(ConfigFile, data, 0644); err != nil {
-		return err
-	}
-
-	// Sync back to GJDATA for backwards compatibility
-	var lines []string
-	for k, v := range m.cfg.Targets {
-		parts := strings.Split(k, "/")
-		if len(parts) == 2 {
-			sel := "0"
-			if v.Selected {
-				sel = "1"
-			}
-			lines = append(lines, fmt.Sprintf("%s/%s/%s/%d/%d", parts[0], parts[1], sel, v.MinPrice, v.MaxPrice))
-		}
-	}
-	if len(lines) > 0 {
-		_ = os.WriteFile(LegacyGJData, []byte(strings.Join(lines, "#")), 0644)
-	}
-	return nil
+	return os.WriteFile(ConfigFile, data, 0644)
 }

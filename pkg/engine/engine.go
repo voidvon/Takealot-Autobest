@@ -488,7 +488,10 @@ func (e *Engine) executeFollowBatch(items []FollowItem) {
 
 	if len(newTargets) > 0 {
 		_ = e.cfgMgr.UpdateTargets(newTargets)
-		e.Log(fmt.Sprintf("💾 已将新跟卖的 %d 个商品自动加入监控列表", len(newTargets)), "SUCCESS")
+		if e.db != nil {
+			_ = e.db.SaveTargets(newTargets)
+		}
+		e.Log(fmt.Sprintf("💾 已将新跟卖的 %d 个商品自动加入监控列表并存入数据库", len(newTargets)), "SUCCESS")
 	}
 
 	e.Log(fmt.Sprintf("🏁 批量跟卖完成！成功上架 Offer: %d 个", successCount), "SUCCESS")
