@@ -128,7 +128,7 @@ export const App: React.FC = () => {
         />
 
         {/* Tab Content Area */}
-        <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-y-auto">
+        <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-y-auto min-w-0">
           {activeTab === 'dashboard' && (
             <DashboardTab
               onNavigate={setActiveTab}

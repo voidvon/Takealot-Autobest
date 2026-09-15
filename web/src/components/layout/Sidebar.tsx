@@ -76,7 +76,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   ]
 
   return (
-    <aside className="w-full md:w-60 shrink-0 border-r border-border bg-card/50 backdrop-blur-xs flex flex-col justify-between p-3">
+    <aside className="w-full md:w-60 shrink-0 border-r border-border bg-card/95 backdrop-blur-sm flex flex-col justify-between p-3 h-full md:h-[calc(100vh-3.5rem)] max-h-[calc(100vh-3.5rem)] md:sticky md:top-14 self-start overflow-y-auto">
       <div className="space-y-4">
         {/* Navigation Group */}
         <div className="space-y-1">
@@ -117,7 +117,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       {/* Footer System Status Block */}
-      <div className="pt-3 mt-auto border-t border-border">
+      <div className="pt-3 mt-auto border-t border-border shrink-0">
         <div className="rounded-lg border border-border bg-muted/30 p-2.5 space-y-1.5">
           <div className="flex items-center justify-between text-xs">
             <span className="font-semibold text-foreground flex items-center gap-1.5">
