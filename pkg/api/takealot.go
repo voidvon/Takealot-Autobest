@@ -222,6 +222,28 @@ func (c *Client) TestConnection() TestResult {
 	return TestResult{Success: false, Message: fmt.Sprintf("接口返回异常状态码: HTTP %d", respDet.StatusCode)}
 }
 
+type SellerInfo struct {
+	SellerID    int64  `json:"seller_id"`
+	DisplayName string `json:"display_name"`
+	Slug        string `json:"slug"`
+}
+
+func (c *Client) GetSellerInfo() (*SellerInfo, error) {
+	url := fmt.Sprintf("%s/v2/seller", SellerBaseURL)
+	resp, err := c.doRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 200 {
+		var info SellerInfo
+		if err := json.NewDecoder(resp.Body).Decode(&info); err == nil {
+			return &info, nil
+		}
+	}
+	return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+}
+
 func AnyToString(v any) string {
 	if v == nil {
 		return ""
@@ -279,6 +301,8 @@ type OfferItem struct {
 	TotalMerchantStock int      `json:"total_merchant_stock"`
 	DateModified       string   `json:"date_modified"`
 	Status             any      `json:"status"`
+	MerchantSKU        string   `json:"merchant_sku"`
+	SKU                string   `json:"sku"`
 }
 
 type OffersResponse struct {

@@ -8,10 +8,9 @@ import { RepricerTab } from './components/repricer/RepricerTab'
 import { CatalogTab } from './components/catalog/CatalogTab'
 import { SalesTab } from './components/sales/SalesTab'
 import { FollowTab } from './components/follow/FollowTab'
-import { LogsTab } from './components/logs/LogsTab'
 import { SettingsTab } from './components/settings/SettingsTab'
 
-const VALID_TABS: TabId[] = ['dashboard', 'repricer', 'catalog', 'sales', 'follow', 'logs', 'settings']
+const VALID_TABS: TabId[] = ['dashboard', 'repricer', 'catalog', 'sales', 'follow', 'settings']
 
 const getTabFromLocation = (): TabId => {
   // 优先从 Hash 解析 (如 #/repricer 或 #repricer)
@@ -87,22 +86,59 @@ export const App: React.FC = () => {
     }
   }, [darkMode])
 
-  // Fetch version & poll status
+  // Fetch version & initial status
   useEffect(() => {
     api.getVersion().then((res) => {
       if (res.version) setVersion(res.version)
     }).catch(() => {})
 
-    const fetchStatus = () => {
+    // 页面载入时主动获取一次状态
+    api.getRepriceStatus().then((s) => {
+      if (s) setStatus(s)
+    }).catch(() => {})
+  }, [])
+
+  // 本地实时每秒倒计时 (每秒精确递减，不发任何网络请求)
+  useEffect(() => {
+    if (!status.is_running || status.is_paused || status.countdown_seconds <= 0) return
+
+    const tickTimer = setInterval(() => {
+      setStatus((prev) => {
+        if (!prev.is_running || prev.is_paused || prev.countdown_seconds <= 0) return prev
+        return {
+          ...prev,
+          countdown_seconds: Math.max(0, prev.countdown_seconds - 1),
+        }
+      })
+    }, 1000)
+
+    return () => clearInterval(tickTimer)
+  }, [status.is_running, status.is_paused, status.countdown_seconds])
+
+  // 智能校准：仅在引擎正在运行时每隔 15 秒校准一次；停止时彻底休眠，不发任何请求
+  useEffect(() => {
+    if (!status.is_running) return
+
+    const syncCalibrate = () => {
+      if (document.hidden) return
       api.getRepriceStatus().then((s) => {
         if (s) setStatus(s)
       }).catch(() => {})
     }
 
-    fetchStatus()
-    const timer = setInterval(fetchStatus, 3000)
-    return () => clearInterval(timer)
-  }, [])
+    const intervalTimer = setInterval(syncCalibrate, 15000)
+
+    // 切回前台标签页时主动校准一次
+    const handleVisibility = () => {
+      if (!document.hidden) syncCalibrate()
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+
+    return () => {
+      clearInterval(intervalTimer)
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
+  }, [status.is_running])
 
   // Engine controls
   const handleStartReprice = async () => {
@@ -111,6 +147,10 @@ export const App: React.FC = () => {
       const res = await api.startReprice()
       if (res.success) {
         setStatus((prev) => ({ ...prev, is_running: true, is_paused: false }))
+        // 立即校准一次状态
+        api.getRepriceStatus().then((s) => {
+          if (s) setStatus(s)
+        }).catch(() => {})
       } else {
         alert(res.message || '启动失败')
       }
@@ -127,6 +167,9 @@ export const App: React.FC = () => {
       const res = await api.pauseReprice()
       if (res.success) {
         setStatus((prev) => ({ ...prev, is_paused: !prev.is_paused }))
+        api.getRepriceStatus().then((s) => {
+          if (s) setStatus(s)
+        }).catch(() => {})
       }
     } catch (e: any) {
       alert(`暂停操作失败: ${e.message}`)
@@ -140,7 +183,7 @@ export const App: React.FC = () => {
     try {
       const res = await api.stopReprice()
       if (res.success) {
-        setStatus((prev) => ({ ...prev, is_running: false, is_paused: false }))
+        setStatus((prev) => ({ ...prev, is_running: false, is_paused: false, countdown_seconds: 0 }))
       }
     } catch (e: any) {
       alert(`停止操作失败: ${e.message}`)
@@ -186,9 +229,7 @@ export const App: React.FC = () => {
 
           {activeTab === 'sales' && <SalesTab />}
 
-          {activeTab === 'follow' && <FollowTab onNavigateLogs={() => handleSelectTab('logs')} />}
-
-          {activeTab === 'logs' && <LogsTab />}
+          {activeTab === 'follow' && <FollowTab onNavigateLogs={() => handleSelectTab('repricer')} />}
 
           {activeTab === 'settings' && <SettingsTab />}
         </main>

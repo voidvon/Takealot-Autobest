@@ -158,4 +158,77 @@ export const api = {
     request<import('../types').RepriceHistoryRecord[]>(`/api/reprice/history?limit=${limit}`),
   getFollowHistory: (limit = 50) =>
     request<import('../types').FollowHistoryRecord[]>(`/api/follow/history?limit=${limit}`),
+
+  // Inbound & Order Fulfillment
+  getLeadtimeOrders: () =>
+    request<{ total: number; items: import('../types').LeadtimeOrderItem[] }>('/api/fulfillment/leadtime-orders'),
+  getShipments: (status?: string) =>
+    request<import('../types').ShipmentRecord[]>(`/api/fulfillment/shipments${status ? `?status=${status}` : ''}`),
+  createShipment: (payload: {
+    shipment_number?: string
+    destination_dc?: string
+    notes?: string
+    status?: string
+    items: import('../types').ShipmentItemRecord[]
+  }) =>
+    request<import('../types').ShipmentRecord>('/api/fulfillment/shipments/create', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  updateShipmentStatus: (id: number, status: string) =>
+    request<{ success: boolean }>('/api/fulfillment/shipments/status', {
+      method: 'POST',
+      body: JSON.stringify({ id, status }),
+    }),
+  deleteShipment: (id: number) =>
+    request<{ success: boolean }>(`/api/fulfillment/shipments/delete?id=${id}`, {
+      method: 'POST',
+    }),
+  updateShipmentItem: (payload: {
+    item_id: number
+    ship_qty: number
+    leadtime_stock: number
+    actual_weight: number
+    volumetric_weight: number
+    weigh_status: string
+  }) =>
+    request<{ success: boolean }>('/api/fulfillment/shipments/item/update', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  quickUpdateOffer: (payload: {
+    offer_id?: string
+    tsin?: string
+    selling_price?: number
+    rrp?: number
+    weight_kg?: number
+    leadtime_stock?: number
+  }) =>
+    request<{ success: boolean; message: string }>('/api/fulfillment/offer/quick-update', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  getBookings: () => request<import('../types').BookingRecord[]>('/api/fulfillment/bookings'),
+  createBooking: (payload: {
+    shipment_id?: number
+    dc: string
+    booking_date: string
+    time_slot: string
+    carrier: string
+    vehicle_reg: string
+    notes?: string
+  }) =>
+    request<import('../types').BookingRecord>('/api/fulfillment/bookings/create', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  updateBookingStatus: (id: number, status: string) =>
+    request<{ success: boolean }>('/api/fulfillment/bookings/status', {
+      method: 'POST',
+      body: JSON.stringify({ id, status }),
+    }),
+  deleteBooking: (id: number) =>
+    request<{ success: boolean }>(`/api/fulfillment/bookings/delete?id=${id}`, {
+      method: 'POST',
+    }),
 }

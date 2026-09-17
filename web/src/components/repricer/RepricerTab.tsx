@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { api } from '../../api/client'
-import type { OfferViewModel, PriorityStatus, TargetConfig } from '../../types'
+import type { OfferViewModel, PriorityStatus, TargetConfig, RepriceHistoryRecord } from '../../types'
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/card'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
@@ -8,7 +8,7 @@ import { Badge } from '../ui/badge'
 import { Dialog } from '../ui/dialog'
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from '../ui/table'
 import { ImagePreviewModal } from '../ui/ImagePreviewModal'
-import { formatCurrency } from '../../lib/utils'
+import { formatCurrency, cn } from '../../lib/utils'
 import {
   Search,
   Filter,
@@ -22,9 +22,11 @@ import {
   ShieldAlert,
   History,
   CloudDownload,
+  PackageCheck,
 } from 'lucide-react'
 
 export const RepricerTab: React.FC = () => {
+  const [activeSubTab, setActiveSubTab] = useState<'status' | 'logs'>('status')
   const [loading, setLoading] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [offers, setOffers] = useState<OfferViewModel[]>([])
@@ -32,6 +34,10 @@ export const RepricerTab: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<'all' | PriorityStatus | 'selected'>('all')
   const [savingTargets, setSavingTargets] = useState(false)
   const [hasChanges, setHasChanges] = useState(false)
+
+  // Running logs state
+  const [historyRecords, setHistoryRecords] = useState<RepriceHistoryRecord[]>([])
+  const [logsLoading, setLogsLoading] = useState(false)
 
   // Image preview modal state
   const [previewImage, setPreviewImage] = useState<{
@@ -52,22 +58,15 @@ export const RepricerTab: React.FC = () => {
     saving?: boolean
   }>({ open: false })
 
-  // History modal state
-  const [historyModal, setHistoryModal] = useState<{
-    open: boolean
-    records: any[]
-    loading?: boolean
-    title?: string
-  }>({ open: false, records: [] })
-
-  const loadHistory = async () => {
-    setHistoryModal((prev) => ({ ...prev, open: true, loading: true }))
+  const loadRepriceLogs = async () => {
+    setLogsLoading(true)
     try {
-      const list = await api.getRepriceHistory(100)
-      setHistoryModal({ open: true, records: list || [], loading: false })
+      const list = await api.getRepriceHistory(200)
+      setHistoryRecords(list || [])
     } catch (err: any) {
-      alert(`获取调价历史失败: ${err.message}`)
-      setHistoryModal({ open: false, records: [] })
+      console.error('获取调价运行日志失败:', err)
+    } finally {
+      setLogsLoading(false)
     }
   }
 
@@ -90,9 +89,10 @@ export const RepricerTab: React.FC = () => {
 
   useEffect(() => {
     loadOffers(false)
+    loadRepriceLogs()
   }, [])
 
-  // Filter & Search
+  // Filter & Search for Offers
   const filteredOffers = useMemo(() => {
     return offers.filter((item) => {
       // Search
@@ -101,7 +101,8 @@ export const RepricerTab: React.FC = () => {
         const matchesTitle = item.title?.toLowerCase().includes(q)
         const matchesTSIN = item.tsin_id?.toLowerCase().includes(q)
         const matchesPLID = item.plid?.toLowerCase().includes(q)
-        if (!matchesTitle && !matchesTSIN && !matchesPLID) return false
+        const matchesSKU = item.sku?.toLowerCase().includes(q)
+        if (!matchesTitle && !matchesTSIN && !matchesPLID && !matchesSKU) return false
       }
       // Status Filter
       if (statusFilter === 'selected') {
@@ -112,6 +113,20 @@ export const RepricerTab: React.FC = () => {
       return true
     })
   }, [offers, searchQuery, statusFilter])
+
+  // Filter & Search for Running Logs
+  const filteredLogs = useMemo(() => {
+    if (!searchQuery.trim()) return historyRecords
+    const q = searchQuery.toLowerCase()
+    return historyRecords.filter((r) =>
+      (r.title && r.title.toLowerCase().includes(q)) ||
+      (r.sku && r.sku.toLowerCase().includes(q)) ||
+      (r.tsin_id && r.tsin_id.toLowerCase().includes(q)) ||
+      (r.store_name && r.store_name.toLowerCase().includes(q)) ||
+      (r.action && r.action.toLowerCase().includes(q)) ||
+      (r.reason && r.reason.toLowerCase().includes(q))
+    )
+  }, [historyRecords, searchQuery])
 
   // Handlers for modifying targets
   const handleToggleSelect = (key: string) => {
@@ -207,9 +222,17 @@ export const RepricerTab: React.FC = () => {
           </p>
         </div>
         <div className="flex items-center gap-2.5">
-          <Button variant="outline" size="sm" onClick={loadHistory} className="gap-1.5 text-xs">
-            <History className="h-3.5 w-3.5 text-primary" />
-            <span>调价历史</span>
+          <Button
+            variant={activeSubTab === 'logs' ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => {
+              setActiveSubTab('logs')
+              loadRepriceLogs()
+            }}
+            className="gap-1.5 text-xs"
+          >
+            <History className="h-3.5 w-3.5" />
+            <span>运行日志</span>
           </Button>
           <Button variant="outline" size="sm" onClick={() => loadOffers(false)} loading={loading} className="gap-1.5 text-xs">
             <RefreshCw className="h-3.5 w-3.5" />
@@ -233,126 +256,166 @@ export const RepricerTab: React.FC = () => {
         </div>
       </div>
 
-      {/* Filter & Metric Cards using standard shadcn components */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <Card
-          className={`cursor-pointer transition-colors ${
-            statusFilter === 'all' ? 'border-primary shadow-xs ring-1 ring-primary/20' : 'hover:border-border/80'
-          }`}
-          onClick={() => setStatusFilter('all')}
-        >
-          <CardHeader className="p-3 pb-1">
-            <CardTitle className="text-xs font-medium text-muted-foreground flex items-center justify-between">
-              <span>全量商品库</span>
-              <Badge variant="secondary" className="font-mono text-[10px] h-4 px-1">全部</Badge>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="p-3 pt-0">
-            <div className="text-xl font-bold font-mono text-foreground">{offers.length}</div>
-          </CardContent>
-        </Card>
-
-        <Card
-          className={`cursor-pointer transition-colors ${
-            statusFilter === 'winning'
-              ? 'border-emerald-500 shadow-xs ring-1 ring-emerald-500/20'
-              : 'hover:border-border/80'
-          }`}
-          onClick={() => setStatusFilter('winning')}
-        >
-          <CardHeader className="p-3 pb-1">
-            <CardTitle className="text-xs font-medium text-emerald-600 dark:text-emerald-400 flex items-center justify-between">
-              <span>处于绝对优先</span>
-              <Badge variant="success" dot className="text-[10px] h-4 px-1.5">Winning</Badge>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="p-3 pt-0">
-            <div className="text-xl font-bold font-mono text-emerald-600 dark:text-emerald-400">
-              {winningCount}
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card
-          className={`cursor-pointer transition-colors ${
-            statusFilter === 'losing'
-              ? 'border-destructive shadow-xs ring-1 ring-destructive/20'
-              : 'hover:border-border/80'
-          }`}
-          onClick={() => setStatusFilter('losing')}
-        >
-          <CardHeader className="p-3 pb-1">
-            <CardTitle className="text-xs font-medium text-rose-600 dark:text-rose-400 flex items-center justify-between">
-              <span>失去优先价格</span>
-              <Badge variant="destructive" dot className="text-[10px] h-4 px-1.5">Battle</Badge>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="p-3 pt-0">
-            <div className="text-xl font-bold font-mono text-rose-600 dark:text-rose-400">
-              {losingCount}
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card
-          className={`cursor-pointer transition-colors ${
-            statusFilter === 'selected'
-              ? 'border-primary shadow-xs ring-1 ring-primary/20'
-              : 'hover:border-border/80'
-          }`}
-          onClick={() => setStatusFilter('selected')}
-        >
-          <CardHeader className="p-3 pb-1">
-            <CardTitle className="text-xs font-medium text-muted-foreground flex items-center justify-between">
-              <span>已开启自动改价</span>
-              <Badge variant="default" className="text-[10px] h-4 px-1.5">Active</Badge>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="p-3 pt-0">
-            <div className="text-xl font-bold font-mono text-foreground">
-              {totalMonitored}
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Search & Actions Bar */}
+      {/* SubTabs & Search Bar */}
       <Card>
-        <CardContent className="p-4 flex flex-col md:flex-row items-center justify-between gap-3">
-          <div className="relative w-full md:w-80">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input
-              type="text"
-              placeholder="搜索商品标题、TSIN 或 PLID..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9 h-9 text-xs"
-            />
+        <CardContent className="p-3 sm:p-4 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+          {/* Left side: Sub-tabs: SKU状态 & 运行日志 */}
+          <div className="flex items-center gap-2">
+            <div className="inline-flex items-center p-1 rounded-lg bg-muted border border-border">
+              <button
+                type="button"
+                onClick={() => setActiveSubTab('status')}
+                className={cn(
+                  "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all cursor-pointer",
+                  activeSubTab === 'status'
+                    ? "bg-background text-foreground shadow-xs"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <PackageCheck className="h-3.5 w-3.5" />
+                <span>SKU状态</span>
+                <Badge variant={activeSubTab === 'status' ? "default" : "secondary"} className="ml-1 text-[10px] px-1.5 py-0 h-4">
+                  {offers.length}
+                </Badge>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveSubTab('logs')
+                  loadRepriceLogs()
+                }}
+                className={cn(
+                  "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all cursor-pointer",
+                  activeSubTab === 'logs'
+                    ? "bg-background text-foreground shadow-xs"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <History className="h-3.5 w-3.5" />
+                <span>运行日志</span>
+                <Badge variant={activeSubTab === 'logs' ? "default" : "secondary"} className="ml-1 text-[10px] px-1.5 py-0 h-4">
+                  {historyRecords.length}
+                </Badge>
+              </button>
+            </div>
           </div>
 
-          <div className="flex items-center gap-2 w-full md:w-auto justify-end">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => handleSelectAllFiltered(true)}
-              className="text-xs"
-            >
-              勾选当前筛选
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => handleSelectAllFiltered(false)}
-              className="text-xs"
-            >
-              取消勾选
-            </Button>
+          {/* Right side: Search & Refresh */}
+          <div className="flex items-center gap-2.5 w-full md:w-auto justify-end">
+            <div className="relative w-full md:w-80">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                type="text"
+                placeholder={activeSubTab === 'status' ? "搜索商品标题、SKU、TSIN 或 PLID..." : "搜索日志标题、SKU、TSIN 或说明..."}
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-9 h-9 text-xs"
+              />
+            </div>
+            {activeSubTab === 'logs' && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={loadRepriceLogs}
+                loading={logsLoading}
+                className="h-9 px-3 text-xs gap-1.5 shrink-0"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                <span>刷新日志</span>
+              </Button>
+            )}
           </div>
         </CardContent>
       </Card>
 
-      {/* Main Repricing Data Table */}
-      <Card className="overflow-hidden border-border/80">
+      {/* SKU Status View */}
+      {activeSubTab === 'status' && (
+        <>
+          {/* Filter & Metric Cards using standard shadcn components */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <Card
+              className={`cursor-pointer transition-colors ${
+                statusFilter === 'all' ? 'border-primary shadow-xs ring-1 ring-primary/20' : 'hover:border-border/80'
+              }`}
+              onClick={() => setStatusFilter('all')}
+            >
+              <CardHeader className="p-3 pb-1">
+                <CardTitle className="text-xs font-medium text-muted-foreground flex items-center justify-between">
+                  <span>全量商品库</span>
+                  <Badge variant="secondary" className="font-mono text-[10px] h-4 px-1">全部</Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-3 pt-0">
+                <div className="text-xl font-bold font-mono text-foreground">{offers.length}</div>
+              </CardContent>
+            </Card>
+
+            <Card
+              className={`cursor-pointer transition-colors ${
+                statusFilter === 'winning'
+                  ? 'border-emerald-500 shadow-xs ring-1 ring-emerald-500/20'
+                  : 'hover:border-border/80'
+              }`}
+              onClick={() => setStatusFilter('winning')}
+            >
+              <CardHeader className="p-3 pb-1">
+                <CardTitle className="text-xs font-medium text-emerald-600 dark:text-emerald-400 flex items-center justify-between">
+                  <span>处于绝对优先</span>
+                  <Badge variant="success" dot className="text-[10px] h-4 px-1.5">Winning</Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-3 pt-0">
+                <div className="text-xl font-bold font-mono text-emerald-600 dark:text-emerald-400">
+                  {winningCount}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card
+              className={`cursor-pointer transition-colors ${
+                statusFilter === 'losing'
+                  ? 'border-destructive shadow-xs ring-1 ring-destructive/20'
+                  : 'hover:border-border/80'
+              }`}
+              onClick={() => setStatusFilter('losing')}
+            >
+              <CardHeader className="p-3 pb-1">
+                <CardTitle className="text-xs font-medium text-rose-600 dark:text-rose-400 flex items-center justify-between">
+                  <span>失去优先价格</span>
+                  <Badge variant="destructive" dot className="text-[10px] h-4 px-1.5">Battle</Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-3 pt-0">
+                <div className="text-xl font-bold font-mono text-rose-600 dark:text-rose-400">
+                  {losingCount}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card
+              className={`cursor-pointer transition-colors ${
+                statusFilter === 'selected'
+                  ? 'border-primary shadow-xs ring-1 ring-primary/20'
+                  : 'hover:border-border/80'
+              }`}
+              onClick={() => setStatusFilter('selected')}
+            >
+              <CardHeader className="p-3 pb-1">
+                <CardTitle className="text-xs font-medium text-muted-foreground flex items-center justify-between">
+                  <span>已开启自动改价</span>
+                  <Badge variant="default" className="text-[10px] h-4 px-1.5">Active</Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-3 pt-0">
+                <div className="text-xl font-bold font-mono text-foreground">
+                  {totalMonitored}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Main Repricing Data Table */}
+          <Card className="overflow-hidden border-border/80">
         <div className="overflow-x-auto">
           <Table>
             <TableHeader className="bg-muted/30">
@@ -444,6 +507,9 @@ export const RepricerTab: React.FC = () => {
                             {item.title || '未知商品标题'}
                           </p>
                           <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground font-mono">
+                            {item.sku && (
+                              <span>SKU: <strong className="text-foreground">{item.sku}</strong></span>
+                            )}
                             <span>TSIN: <strong className="text-foreground">{item.tsin_id}</strong></span>
                             {item.plid && (
                               <span>PLID: <strong className="text-foreground">{item.plid}</strong></span>
@@ -587,6 +653,164 @@ export const RepricerTab: React.FC = () => {
           </Table>
         </div>
       </Card>
+    </>
+  )}
+
+      {/* Running Logs Table */}
+      {activeSubTab === 'logs' && (
+        <Card className="overflow-hidden border-border/80">
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader className="bg-muted/30">
+                <TableRow>
+                  <TableHead className="w-36">时间</TableHead>
+                  <TableHead className="w-32">SKU</TableHead>
+                  <TableHead className="w-16 text-center">主图</TableHead>
+                  <TableHead className="min-w-[240px]">标题</TableHead>
+                  <TableHead className="w-28 text-center">店铺</TableHead>
+                  <TableHead className="w-32 text-center">动作</TableHead>
+                  <TableHead className="min-w-[240px]">说明</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {logsLoading ? (
+                  <TableRow>
+                    <TableCell colSpan={7} className="py-12 text-center text-xs text-muted-foreground">
+                      正在从本地持久化数据库加载调价运行日志...
+                    </TableCell>
+                  </TableRow>
+                ) : filteredLogs.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={7} className="py-12 text-center text-xs text-muted-foreground">
+                      {searchQuery.trim()
+                        ? '未搜索到匹配的调价运行日志'
+                        : '暂无调价运行日志（当自动竞价引擎检测到价格变动并调价成功时将在此显式）'}
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  filteredLogs.map((r) => {
+                    const hasImage = !!r.image_url
+                    const actionType = r.action || (r.new_price < r.old_price ? '跟降' : r.new_price > r.old_price ? '跟涨' : '改价')
+                    const takealotUrl = r.tsin_id ? `https://www.takealot.com/x/TSIN${r.tsin_id}` : ''
+
+                    return (
+                      <TableRow key={r.id} className="hover:bg-muted/30 transition-colors">
+                        {/* 1. 时间 */}
+                        <TableCell className="text-xs font-mono text-muted-foreground whitespace-nowrap">
+                          {r.created_at}
+                        </TableCell>
+
+                        {/* 2. SKU */}
+                        <TableCell className="font-mono text-xs font-semibold text-foreground whitespace-nowrap">
+                          {r.sku || (r.tsin_id ? `TSIN:${r.tsin_id}` : '-')}
+                        </TableCell>
+
+                        {/* 3. 主图 */}
+                        <TableCell className="text-center">
+                          <button
+                            onClick={() =>
+                              setPreviewImage({
+                                open: true,
+                                imageUrl: r.image_url,
+                                title: r.title,
+                                tsin: r.tsin_id,
+                              })
+                            }
+                            className="h-10 w-10 mx-auto rounded-lg bg-muted border border-border flex items-center justify-center overflow-hidden hover:ring-2 hover:ring-primary/60 transition group cursor-pointer relative"
+                            title="点击放大查看主图"
+                          >
+                            {hasImage ? (
+                              <img
+                                src={r.image_url}
+                                alt={r.title}
+                                className="h-full w-full object-contain p-0.5 group-hover:scale-110 transition-transform duration-200"
+                                loading="lazy"
+                              />
+                            ) : (
+                              <ImageIcon className="h-4 w-4 text-muted-foreground" />
+                            )}
+                          </button>
+                        </TableCell>
+
+                        {/* 4. 标题 */}
+                        <TableCell>
+                          <div className="space-y-1">
+                            <p className="font-medium text-foreground line-clamp-2 text-xs leading-snug" title={r.title}>
+                              {r.title || r.target_key || '未知商品标题'}
+                            </p>
+                            <div className="flex items-center gap-2 text-[11px] text-muted-foreground font-mono">
+                              {r.tsin_id && <span>TSIN: <strong className="text-foreground">{r.tsin_id}</strong></span>}
+                              {takealotUrl && (
+                                <a
+                                  href={takealotUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center gap-0.5 text-primary hover:underline text-[10px]"
+                                >
+                                  <span>链接</span>
+                                  <ExternalLink className="h-2.5 w-2.5" />
+                                </a>
+                              )}
+                            </div>
+                          </div>
+                        </TableCell>
+
+                        {/* 5. 店铺 */}
+                        <TableCell className="text-center whitespace-nowrap">
+                          <Badge variant="outline" className="text-[11px] font-normal">
+                            {r.store_name || 'Huihengxin'}
+                          </Badge>
+                        </TableCell>
+
+                        {/* 6. 动作 */}
+                        <TableCell className="text-center whitespace-nowrap">
+                          <div className="inline-flex flex-col items-center gap-1">
+                            {actionType === '跟降' ? (
+                              <Badge variant="warning" className="text-[10px] px-1.5 h-4.5">
+                                跟降
+                              </Badge>
+                            ) : actionType === '跟涨' ? (
+                              <Badge variant="success" className="text-[10px] px-1.5 h-4.5">
+                                跟涨
+                              </Badge>
+                            ) : actionType === '底价保护' ? (
+                              <Badge variant="destructive" className="text-[10px] px-1.5 h-4.5">
+                                底价保护
+                              </Badge>
+                            ) : (
+                              <Badge variant="default" className="text-[10px] px-1.5 h-4.5">
+                                {actionType}
+                              </Badge>
+                            )}
+                            <div className="text-[11px] font-mono text-muted-foreground">
+                              <span className="line-through">R{r.old_price}</span>
+                              <span className="text-foreground font-bold ml-1">→ R{r.new_price}</span>
+                            </div>
+                          </div>
+                        </TableCell>
+
+                        {/* 7. 说明 */}
+                        <TableCell>
+                          <div className="space-y-1">
+                            <p className="text-xs text-foreground/90 font-sans leading-relaxed">
+                              {r.reason || '自动根据最优竞品价格策略执行调价'}
+                            </p>
+                            {r.competitor_price > 0 && (
+                              <div className="text-[10px] font-mono text-muted-foreground">
+                                竞品最优价: <span className="text-primary font-semibold">R{r.competitor_price}</span>
+                              </div>
+                            )}
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </Card>
+      )}
 
       {/* Image Preview Modal */}
       <ImagePreviewModal
@@ -644,66 +868,6 @@ export const RepricerTab: React.FC = () => {
               loading={editOffer.saving}
             >
               提交修改
-            </Button>
-          </div>
-        </div>
-      </Dialog>
-
-      {/* SQLite Reprice History Modal */}
-      <Dialog
-        open={historyModal.open}
-        onClose={() => setHistoryModal({ open: false, records: [] })}
-        title={
-          <div className="flex items-center gap-2">
-            <History className="h-4 w-4 text-primary" />
-            <span>SQLite 自动调价历史流水</span>
-            <Badge variant="success" dot className="text-[10px]">持久化数据库</Badge>
-          </div>
-        }
-        description="记录自动化巡检引擎历次价格变动的商品、原价、新价与竞争决策原因"
-        maxWidth="2xl"
-      >
-        <div className="space-y-4">
-          {historyModal.loading ? (
-            <div className="py-12 text-center text-xs text-muted-foreground">正在从 SQLite 数据库载入记录...</div>
-          ) : historyModal.records.length === 0 ? (
-            <div className="py-12 text-center text-xs text-muted-foreground">
-              SQLite 数据库中暂无改价历史（当自动化引擎检测到价格变动并调价成功时将自动写入）
-            </div>
-          ) : (
-            <div className="max-h-[440px] overflow-y-auto rounded-xl border border-border">
-              <Table>
-                <TableHeader className="bg-muted/40">
-                  <TableRow>
-                    <TableHead className="w-36">时间</TableHead>
-                    <TableHead>商品信息</TableHead>
-                    <TableHead className="text-center w-20">原价</TableHead>
-                    <TableHead className="text-center w-20 font-semibold text-foreground">新价</TableHead>
-                    <TableHead className="text-center w-24">对手最低价</TableHead>
-                    <TableHead>决策原因</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody className="font-mono">
-                  {historyModal.records.map((r) => (
-                    <TableRow key={r.id} className="hover:bg-muted/30">
-                      <TableCell className="text-muted-foreground text-[11px] whitespace-nowrap">{r.created_at}</TableCell>
-                      <TableCell className="font-sans max-w-[200px] truncate" title={r.title}>
-                        <div className="text-foreground font-medium truncate">{r.title || r.target_key}</div>
-                        <div className="text-[10px] text-muted-foreground font-mono">TSIN: {r.tsin_id}</div>
-                      </TableCell>
-                      <TableCell className="text-center text-muted-foreground line-through">R {r.old_price}</TableCell>
-                      <TableCell className="text-center font-bold text-emerald-600 dark:text-emerald-400">R {r.new_price}</TableCell>
-                      <TableCell className="text-center text-foreground">R {r.competitor_price}</TableCell>
-                      <TableCell className="text-[11px] font-sans text-muted-foreground">{r.reason}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-          <div className="flex justify-end pt-2">
-            <Button variant="outline" size="sm" onClick={() => setHistoryModal({ open: false, records: [] })}>
-              关闭
             </Button>
           </div>
         </div>

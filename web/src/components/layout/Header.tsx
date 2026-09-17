@@ -3,6 +3,7 @@ import type { EngineStatus } from '../../types'
 import { Button } from '../ui/button'
 import { Badge } from '../ui/badge'
 import { Play, Pause, Square, Moon, Sun } from 'lucide-react'
+import { formatMinutesSeconds } from '../../lib/countdown'
 
 interface HeaderProps {
   version: string
@@ -25,12 +26,6 @@ export const Header: React.FC<HeaderProps> = ({
   onToggleDarkMode,
   loadingAction,
 }) => {
-  const formatCountdown = (sec: number) => {
-    if (sec <= 0) return '00:00'
-    const m = Math.floor(sec / 60)
-    const s = sec % 60
-    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
-  }
 
   return (
     <header className="sticky top-0 z-40 w-full border-b border-border bg-background/95 backdrop-blur-sm">
@@ -74,7 +69,7 @@ export const Header: React.FC<HeaderProps> = ({
             <div className="flex items-center gap-1.5">
               <span className="text-muted-foreground text-[11px]">下次轮询:</span>
               <span className="font-mono text-foreground font-semibold text-xs">
-                {status.is_running && !status.is_paused ? formatCountdown(status.countdown_seconds) : '--:--'}
+                {status.is_running && !status.is_paused ? formatMinutesSeconds(status.countdown_seconds) : '--:--'}
               </span>
             </div>
 

@@ -18,7 +18,11 @@ type RepriceHistoryRecord struct {
 	ID              int64  `json:"id"`
 	TargetKey       string `json:"target_key"`
 	TSINID          string `json:"tsin_id"`
+	SKU             string `json:"sku"`
+	ImageURL        string `json:"image_url"`
 	Title           string `json:"title"`
+	StoreName       string `json:"store_name"`
+	Action          string `json:"action"`
 	OldPrice        int    `json:"old_price"`
 	NewPrice        int    `json:"new_price"`
 	CompetitorPrice int    `json:"competitor_price"`
@@ -48,6 +52,57 @@ type BatchJobRecord struct {
 	ResultSummary string `json:"result_summary"`
 	CreatedAt     string `json:"created_at"`
 	UpdatedAt     string `json:"updated_at"`
+}
+
+type ShipmentRecord struct {
+	ID             int64                `json:"id"`
+	ShipmentNumber string               `json:"shipment_number"`
+	Status         string               `json:"status"` // "draft", "confirmed", "shipped", "delivered", "cancelled"
+	DestinationDC  string               `json:"destination_dc"` // "JHB", "CPT", "DUR", "ALL"
+	TotalItems     int                  `json:"total_items"`
+	TotalUnits     int                  `json:"total_units"`
+	TotalValue     float64              `json:"total_value"`
+	Notes          string               `json:"notes"`
+	Items          []ShipmentItemRecord `json:"items,omitempty"`
+	CreatedAt      string               `json:"created_at"`
+	UpdatedAt      string               `json:"updated_at"`
+}
+
+type ShipmentItemRecord struct {
+	ID               int64   `json:"id"`
+	ShipmentID       int64   `json:"shipment_id"`
+	OrderID          int64   `json:"order_id"`
+	OrderItemID      int64   `json:"order_item_id"`
+	OrderDate        string  `json:"order_date"`
+	DueDate          string  `json:"due_date"`
+	TSIN             string  `json:"tsin"`
+	SKU              string  `json:"sku"`
+	Title            string  `json:"title"`
+	ImageURL         string  `json:"image_url"`
+	SellingPrice     float64 `json:"selling_price"`
+	DC               string  `json:"dc"`
+	LeadtimeStock    int     `json:"leadtime_stock"`
+	DemandQty        int     `json:"demand_qty"`
+	ShipQty          int     `json:"ship_qty"`
+	ActualWeight     float64 `json:"actual_weight"`
+	VolumetricWeight float64 `json:"volumetric_weight"`
+	WeighStatus      string  `json:"weigh_status"` // "pending", "done"
+	CreatedAt        string  `json:"created_at"`
+}
+
+type BookingRecord struct {
+	ID            int64  `json:"id"`
+	BookingNumber string `json:"booking_number"`
+	ShipmentID    int64  `json:"shipment_id,omitempty"`
+	ShipmentNo    string `json:"shipment_no,omitempty"`
+	DestinationDC string `json:"destination_dc"`
+	BookingDate   string `json:"booking_date"`
+	TimeSlot      string `json:"time_slot"`
+	CarrierName   string `json:"carrier_name"`
+	VehicleReg    string `json:"vehicle_reg"`
+	Status        string `json:"status"` // "scheduled", "completed", "cancelled"
+	Notes         string `json:"notes"`
+	CreatedAt     string `json:"created_at"`
 }
 
 type DB struct {
@@ -153,6 +208,55 @@ func (d *DB) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_follow_history_created ON follow_history(created_at DESC);`,
 		`CREATE INDEX IF NOT EXISTS idx_batch_jobs_created ON batch_jobs(created_at DESC);`,
 		`CREATE INDEX IF NOT EXISTS idx_cached_offers_tsin ON cached_offers(tsin_id);`,
+		`CREATE TABLE IF NOT EXISTS shipments (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			shipment_number TEXT UNIQUE NOT NULL,
+			status TEXT NOT NULL DEFAULT 'draft',
+			destination_dc TEXT NOT NULL DEFAULT 'JHB',
+			total_items INTEGER DEFAULT 0,
+			total_units INTEGER DEFAULT 0,
+			total_value REAL DEFAULT 0,
+			notes TEXT DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE TABLE IF NOT EXISTS shipment_items (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			shipment_id INTEGER NOT NULL,
+			order_id INTEGER DEFAULT 0,
+			order_item_id INTEGER DEFAULT 0,
+			order_date TEXT DEFAULT '',
+			due_date TEXT DEFAULT '',
+			tsin TEXT DEFAULT '',
+			sku TEXT DEFAULT '',
+			title TEXT DEFAULT '',
+			image_url TEXT DEFAULT '',
+			selling_price REAL DEFAULT 0,
+			dc TEXT DEFAULT '',
+			leadtime_stock INTEGER DEFAULT 0,
+			demand_qty INTEGER DEFAULT 1,
+			ship_qty INTEGER DEFAULT 1,
+			actual_weight REAL DEFAULT 0,
+			volumetric_weight REAL DEFAULT 0,
+			weigh_status TEXT DEFAULT 'pending',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE TABLE IF NOT EXISTS dc_bookings (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			booking_number TEXT UNIQUE NOT NULL,
+			shipment_id INTEGER DEFAULT 0,
+			destination_dc TEXT NOT NULL,
+			booking_date TEXT NOT NULL,
+			time_slot TEXT DEFAULT '',
+			carrier_name TEXT DEFAULT '',
+			vehicle_reg TEXT DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'scheduled',
+			notes TEXT DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_shipments_status ON shipments(status);`,
+		`CREATE INDEX IF NOT EXISTS idx_shipment_items_shipment_id ON shipment_items(shipment_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_dc_bookings_date ON dc_bookings(booking_date);`,
 	}
 
 	for _, q := range queries {
@@ -160,6 +264,19 @@ func (d *DB) migrate() error {
 			return err
 		}
 	}
+
+	migrations := []string{
+		`ALTER TABLE reprice_history ADD COLUMN sku TEXT;`,
+		`ALTER TABLE reprice_history ADD COLUMN image_url TEXT;`,
+		`ALTER TABLE reprice_history ADD COLUMN store_name TEXT;`,
+		`ALTER TABLE reprice_history ADD COLUMN action TEXT;`,
+		`ALTER TABLE cached_offers ADD COLUMN sku TEXT;`,
+		`UPDATE shipment_items SET image_url = '' WHERE image_url LIKE '%covers_tsins%';`,
+	}
+	for _, m := range migrations {
+		_, _ = d.conn.Exec(m)
+	}
+
 	return nil
 }
 
@@ -286,14 +403,14 @@ func (d *DB) MigrateGJData(filePath string) (int, error) {
 
 // --- Reprice History in SQLite ---
 
-func (d *DB) RecordReprice(targetKey, tsinID, title string, oldPrice, newPrice, competitorPrice int, reason string) error {
+func (d *DB) RecordReprice(targetKey, tsinID, sku, title, imageURL, storeName, action string, oldPrice, newPrice, competitorPrice int, reason string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	_, err := d.conn.Exec(`
-		INSERT INTO reprice_history (target_key, tsin_id, title, old_price, new_price, competitor_price, reason, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-	`, targetKey, tsinID, title, oldPrice, newPrice, competitorPrice, reason)
+		INSERT INTO reprice_history (target_key, tsin_id, sku, title, image_url, store_name, action, old_price, new_price, competitor_price, reason, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+	`, targetKey, tsinID, sku, title, imageURL, storeName, action, oldPrice, newPrice, competitorPrice, reason)
 	return err
 }
 
@@ -302,12 +419,26 @@ func (d *DB) GetRecentRepriceHistory(limit int) ([]RepriceHistoryRecord, error) 
 	defer d.mu.RUnlock()
 
 	if limit <= 0 {
-		limit = 50
+		limit = 100
 	}
 	rows, err := d.conn.Query(`
-		SELECT id, target_key, COALESCE(tsin_id, ''), COALESCE(title, ''), old_price, new_price, competitor_price, COALESCE(reason, ''), datetime(created_at, 'localtime')
-		FROM reprice_history
-		ORDER BY id DESC
+		SELECT 
+			h.id, 
+			h.target_key, 
+			COALESCE(h.tsin_id, ''), 
+			COALESCE(NULLIF(h.sku, ''), c.sku, ''), 
+			COALESCE(NULLIF(h.image_url, ''), c.image_url, ''), 
+			COALESCE(NULLIF(h.title, ''), c.title, ''), 
+			COALESCE(NULLIF(h.store_name, ''), 'Huihengxin'), 
+			COALESCE(NULLIF(h.action, ''), CASE WHEN h.new_price < h.old_price THEN '跟降' WHEN h.new_price > h.old_price THEN '跟涨' ELSE '调价' END), 
+			h.old_price, 
+			h.new_price, 
+			h.competitor_price, 
+			COALESCE(h.reason, ''), 
+			datetime(h.created_at, 'localtime')
+		FROM reprice_history h
+		LEFT JOIN cached_offers c ON (h.tsin_id != '' AND h.tsin_id = c.tsin_id) OR (h.target_key = c.target_key)
+		ORDER BY h.id DESC
 		LIMIT ?
 	`, limit)
 	if err != nil {
@@ -318,7 +449,11 @@ func (d *DB) GetRecentRepriceHistory(limit int) ([]RepriceHistoryRecord, error) 
 	list := make([]RepriceHistoryRecord, 0)
 	for rows.Next() {
 		var item RepriceHistoryRecord
-		if err := rows.Scan(&item.ID, &item.TargetKey, &item.TSINID, &item.Title, &item.OldPrice, &item.NewPrice, &item.CompetitorPrice, &item.Reason, &item.CreatedAt); err != nil {
+		if err := rows.Scan(
+			&item.ID, &item.TargetKey, &item.TSINID, &item.SKU, &item.ImageURL, &item.Title,
+			&item.StoreName, &item.Action, &item.OldPrice, &item.NewPrice, &item.CompetitorPrice,
+			&item.Reason, &item.CreatedAt,
+		); err != nil {
 			continue
 		}
 		list = append(list, item)
@@ -430,6 +565,7 @@ func (d *DB) GetRecentBatchJobs(limit int) ([]BatchJobRecord, error) {
 type CachedOffer struct {
 	Key             string `json:"key"`
 	TSINID          string `json:"tsin_id"`
+	SKU             string `json:"sku"`
 	PLID            string `json:"plid"`
 	Title           string `json:"title"`
 	SellingPrice    int    `json:"selling_price"`
@@ -458,10 +594,11 @@ func (d *DB) SaveCachedOffers(offers []CachedOffer) error {
 
 	stmt, err := tx.Prepare(`
 		INSERT INTO cached_offers (
-			target_key, tsin_id, plid, title, selling_price, rrp, stock, date_modified,
+			target_key, tsin_id, sku, plid, title, selling_price, rrp, stock, date_modified,
 			best_price, competing_offers, priority_status, price_diff, image_url, image_large_url, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(target_key) DO UPDATE SET
+			sku = CASE WHEN excluded.sku != '' THEN excluded.sku ELSE cached_offers.sku END,
 			title = excluded.title,
 			selling_price = excluded.selling_price,
 			rrp = excluded.rrp,
@@ -482,7 +619,7 @@ func (d *DB) SaveCachedOffers(offers []CachedOffer) error {
 
 	for _, item := range offers {
 		if _, err := stmt.Exec(
-			item.Key, item.TSINID, item.PLID, item.Title, item.SellingPrice, item.RRP, item.Stock, item.DateModified,
+			item.Key, item.TSINID, item.SKU, item.PLID, item.Title, item.SellingPrice, item.RRP, item.Stock, item.DateModified,
 			item.BestPrice, item.CompetingOffers, item.PriorityStatus, item.PriceDiff, item.ImageURL, item.ImageLargeURL,
 		); err != nil {
 			return err
@@ -511,7 +648,7 @@ func (d *DB) LoadCachedOffers() ([]CachedOffer, error) {
 	defer d.mu.RUnlock()
 
 	rows, err := d.conn.Query(`
-		SELECT target_key, tsin_id, plid, COALESCE(title, ''), selling_price, rrp, stock,
+		SELECT target_key, tsin_id, COALESCE(sku, ''), plid, COALESCE(title, ''), selling_price, rrp, stock,
 		       COALESCE(date_modified, ''), best_price, competing_offers, COALESCE(priority_status, 'solo'),
 		       price_diff, COALESCE(image_url, ''), COALESCE(image_large_url, ''),
 		       datetime(updated_at, 'localtime')
@@ -527,7 +664,7 @@ func (d *DB) LoadCachedOffers() ([]CachedOffer, error) {
 	for rows.Next() {
 		var item CachedOffer
 		if err := rows.Scan(
-			&item.Key, &item.TSINID, &item.PLID, &item.Title, &item.SellingPrice, &item.RRP, &item.Stock,
+			&item.Key, &item.TSINID, &item.SKU, &item.PLID, &item.Title, &item.SellingPrice, &item.RRP, &item.Stock,
 			&item.DateModified, &item.BestPrice, &item.CompetingOffers, &item.PriorityStatus,
 			&item.PriceDiff, &item.ImageURL, &item.ImageLargeURL, &item.UpdatedAt,
 		); err != nil {
@@ -546,6 +683,295 @@ func (d *DB) GetCachedOffersCount() (int, error) {
 	var count int
 	err := d.conn.QueryRow(`SELECT COUNT(*) FROM cached_offers`).Scan(&count)
 	return count, err
+}
+
+// ----------------------------------------------------
+// 发货单 (Shipments) 与 送仓预约 (Bookings) 管理方法
+// ----------------------------------------------------
+
+// CreateShipment 创建新的发货单（支持草稿或已确认）
+func (d *DB) CreateShipment(shipmentNumber, status, destinationDC, notes string, items []ShipmentItemRecord) (*ShipmentRecord, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if status == "" {
+		status = "draft"
+	}
+	if destinationDC == "" {
+		destinationDC = "JHB"
+	}
+
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var totalUnits int
+	var totalValue float64
+	for _, it := range items {
+		qty := it.ShipQty
+		if qty <= 0 {
+			qty = it.DemandQty
+		}
+		if qty <= 0 {
+			qty = 1
+		}
+		totalUnits += qty
+		totalValue += it.SellingPrice * float64(qty)
+	}
+	totalItems := len(items)
+
+	res, err := tx.Exec(`
+		INSERT INTO shipments (shipment_number, status, destination_dc, total_items, total_units, total_value, notes, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'), datetime('now', 'localtime'))
+	`, shipmentNumber, status, destinationDC, totalItems, totalUnits, totalValue, notes)
+	if err != nil {
+		return nil, fmt.Errorf("创建发货单失败: %w", err)
+	}
+
+	shipmentID, err := res.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, it := range items {
+		shipQty := it.ShipQty
+		if shipQty <= 0 {
+			shipQty = it.DemandQty
+		}
+		if shipQty <= 0 {
+			shipQty = 1
+		}
+		weighStatus := it.WeighStatus
+		if weighStatus == "" {
+			weighStatus = "pending"
+		}
+
+		_, err := tx.Exec(`
+			INSERT INTO shipment_items (
+				shipment_id, order_id, order_item_id, order_date, due_date, tsin, sku, title,
+				image_url, selling_price, dc, leadtime_stock, demand_qty, ship_qty,
+				actual_weight, volumetric_weight, weigh_status, created_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+		`, shipmentID, it.OrderID, it.OrderItemID, it.OrderDate, it.DueDate, it.TSIN, it.SKU, it.Title,
+			it.ImageURL, it.SellingPrice, it.DC, it.LeadtimeStock, it.DemandQty, shipQty,
+			it.ActualWeight, it.VolumetricWeight, weighStatus)
+		if err != nil {
+			return nil, fmt.Errorf("插入发货单明细失败: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	return &ShipmentRecord{
+		ID:             shipmentID,
+		ShipmentNumber: shipmentNumber,
+		Status:         status,
+		DestinationDC:  destinationDC,
+		TotalItems:     totalItems,
+		TotalUnits:     totalUnits,
+		TotalValue:     totalValue,
+		Notes:          notes,
+	}, nil
+}
+
+// GetShipments 获取发货单列表（可选根据状态 draft/confirmed/shipped 过滤）
+func (d *DB) GetShipments(status string) ([]ShipmentRecord, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var query string
+	var args []any
+	if status != "" && status != "all" {
+		query = `SELECT id, shipment_number, status, destination_dc, total_items, total_units, total_value, COALESCE(notes, ''),
+		                datetime(created_at, 'localtime'), datetime(updated_at, 'localtime')
+		         FROM shipments WHERE status = ? ORDER BY id DESC`
+		args = append(args, status)
+	} else {
+		query = `SELECT id, shipment_number, status, destination_dc, total_items, total_units, total_value, COALESCE(notes, ''),
+		                datetime(created_at, 'localtime'), datetime(updated_at, 'localtime')
+		         FROM shipments ORDER BY id DESC`
+	}
+
+	rows, err := d.conn.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []ShipmentRecord
+	for rows.Next() {
+		var s ShipmentRecord
+		if err := rows.Scan(
+			&s.ID, &s.ShipmentNumber, &s.Status, &s.DestinationDC, &s.TotalItems, &s.TotalUnits, &s.TotalValue,
+			&s.Notes, &s.CreatedAt, &s.UpdatedAt,
+		); err != nil {
+			continue
+		}
+		list = append(list, s)
+	}
+
+	// 填充每个发货单的 items
+	for i := range list {
+		items, _ := d.getShipmentItemsInternal(list[i].ID)
+		list[i].Items = items
+	}
+
+	return list, nil
+}
+
+func (d *DB) getShipmentItemsInternal(shipmentID int64) ([]ShipmentItemRecord, error) {
+	rows, err := d.conn.Query(`
+		SELECT id, shipment_id, order_id, order_item_id, COALESCE(order_date, ''), COALESCE(due_date, ''),
+		       COALESCE(tsin, ''), COALESCE(sku, ''), COALESCE(title, ''), COALESCE(image_url, ''),
+		       selling_price, COALESCE(dc, ''), leadtime_stock, demand_qty, ship_qty,
+		       actual_weight, volumetric_weight, COALESCE(weigh_status, 'pending'),
+		       datetime(created_at, 'localtime')
+		FROM shipment_items
+		WHERE shipment_id = ?
+		ORDER BY id ASC
+	`, shipmentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []ShipmentItemRecord
+	for rows.Next() {
+		var it ShipmentItemRecord
+		if err := rows.Scan(
+			&it.ID, &it.ShipmentID, &it.OrderID, &it.OrderItemID, &it.OrderDate, &it.DueDate,
+			&it.TSIN, &it.SKU, &it.Title, &it.ImageURL, &it.SellingPrice, &it.DC,
+			&it.LeadtimeStock, &it.DemandQty, &it.ShipQty, &it.ActualWeight, &it.VolumetricWeight,
+			&it.WeighStatus, &it.CreatedAt,
+		); err != nil {
+			continue
+		}
+		items = append(items, it)
+	}
+	return items, nil
+}
+
+// UpdateShipmentStatus 更新发货单状态
+func (d *DB) UpdateShipmentStatus(shipmentID int64, newStatus string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	_, err := d.conn.Exec(`
+		UPDATE shipments
+		SET status = ?, updated_at = datetime('now', 'localtime')
+		WHERE id = ?
+	`, newStatus, shipmentID)
+	return err
+}
+
+// DeleteShipment 删除发货单及其项
+func (d *DB) DeleteShipment(shipmentID int64) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	_, _ = d.conn.Exec(`DELETE FROM shipment_items WHERE shipment_id = ?`, shipmentID)
+	_, err := d.conn.Exec(`DELETE FROM shipments WHERE id = ?`, shipmentID)
+	return err
+}
+
+// UpdateShipmentItem 调整发货单明细（修改发货数量、提前库存、重量、称重状态）
+func (d *DB) UpdateShipmentItem(itemID int64, shipQty, leadtimeStock int, actualWeight, volWeight float64, weighStatus string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	_, err := d.conn.Exec(`
+		UPDATE shipment_items
+		SET ship_qty = ?, leadtime_stock = ?, actual_weight = ?, volumetric_weight = ?,
+		    weigh_status = ?
+		WHERE id = ?
+	`, shipQty, leadtimeStock, actualWeight, volWeight, weighStatus, itemID)
+	return err
+}
+
+// CreateBooking 创建仓库送货预约
+func (d *DB) CreateBooking(shipmentID int64, dc, bookingDate, timeSlot, carrier, vehicleReg, notes string) (*BookingRecord, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	bookingNo := fmt.Sprintf("BK-%s-%d", dc, time.Now().Unix()%1000000)
+	res, err := d.conn.Exec(`
+		INSERT INTO dc_bookings (booking_number, shipment_id, destination_dc, booking_date, time_slot, carrier_name, vehicle_reg, status, notes, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, datetime('now', 'localtime'))
+	`, bookingNo, shipmentID, dc, bookingDate, timeSlot, carrier, vehicleReg, notes)
+	if err != nil {
+		return nil, err
+	}
+
+	id, _ := res.LastInsertId()
+	return &BookingRecord{
+		ID:            id,
+		BookingNumber: bookingNo,
+		ShipmentID:    shipmentID,
+		DestinationDC: dc,
+		BookingDate:   bookingDate,
+		TimeSlot:      timeSlot,
+		CarrierName:   carrier,
+		VehicleReg:    vehicleReg,
+		Status:        "scheduled",
+		Notes:         notes,
+		CreatedAt:     time.Now().Format("2006-01-02 15:04:05"),
+	}, nil
+}
+
+// GetBookings 获取预约记录列表
+func (d *DB) GetBookings() ([]BookingRecord, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	rows, err := d.conn.Query(`
+		SELECT b.id, b.booking_number, b.shipment_id, COALESCE(s.shipment_number, ''),
+		       b.destination_dc, b.booking_date, COALESCE(b.time_slot, ''),
+		       COALESCE(b.carrier_name, ''), COALESCE(b.vehicle_reg, ''), b.status,
+		       COALESCE(b.notes, ''), datetime(b.created_at, 'localtime')
+		FROM dc_bookings b
+		LEFT JOIN shipments s ON b.shipment_id = s.id
+		ORDER BY b.booking_date ASC, b.id DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []BookingRecord
+	for rows.Next() {
+		var b BookingRecord
+		if err := rows.Scan(
+			&b.ID, &b.BookingNumber, &b.ShipmentID, &b.ShipmentNo, &b.DestinationDC,
+			&b.BookingDate, &b.TimeSlot, &b.CarrierName, &b.VehicleReg, &b.Status,
+			&b.Notes, &b.CreatedAt,
+		); err != nil {
+			continue
+		}
+		list = append(list, b)
+	}
+	return list, nil
+}
+
+// UpdateBookingStatus 更新预约状态
+func (d *DB) UpdateBookingStatus(id int64, status string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	_, err := d.conn.Exec(`UPDATE dc_bookings SET status = ? WHERE id = ?`, status, id)
+	return err
+}
+
+// DeleteBooking 删除或取消预约
+func (d *DB) DeleteBooking(id int64) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	_, err := d.conn.Exec(`DELETE FROM dc_bookings WHERE id = ?`, id)
+	return err
 }
 
 

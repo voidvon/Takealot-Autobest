@@ -47,6 +47,7 @@ type Engine struct {
 	totalChecked  int
 	totalRepriced int
 	totalFollowed int
+	storeName     string
 
 	logMu       sync.RWMutex
 	logs        []LogEntry
@@ -265,6 +266,13 @@ func (e *Engine) executeRepriceCycle(ctx context.Context) {
 	increaseStep := cfg.PriceIncreaseStep
 	rrpRatio := cfg.RRPPercentage / 100.0
 
+	// 缓存店铺名称
+	if e.storeName == "" {
+		if seller, err := e.api.GetSellerInfo(); err == nil && seller != nil && seller.DisplayName != "" {
+			e.storeName = seller.DisplayName
+		}
+	}
+
 	// 1. 批量拉取自身商品在售状态（1000件商品仅需10次请求，省去原先循环中1000次单品请求）
 	maxFetch := cfg.MaxFetchOffers
 	if maxFetch < len(activeTargets) {
@@ -282,9 +290,14 @@ func (e *Engine) executeRepriceCycle(ctx context.Context) {
 			tsinStr := strconv.FormatInt(o.TSINID, 10)
 			offerMap[tsinStr] = o
 			plidStr := api.AnyToString(o.TSIN.ProductlineID)
+			sku := o.MerchantSKU
+			if sku == "" {
+				sku = o.SKU
+			}
 			cachedItems = append(cachedItems, db.CachedOffer{
 				Key:             fmt.Sprintf("%s/%s", tsinStr, plidStr),
 				TSINID:          tsinStr,
+				SKU:             sku,
 				PLID:            plidStr,
 				Title:           o.TSIN.Title,
 				SellingPrice:    int(o.SellingPrice),
@@ -338,11 +351,18 @@ func (e *Engine) executeRepriceCycle(ctx context.Context) {
 		var curPrice int
 		var offerID string
 		var title string
+		var sku string
+		var imageURL string
 
 		if o, ok := offerMap[tsinID]; ok {
 			offerID = strconv.FormatInt(o.OfferID, 10)
 			curPrice = int(o.SellingPrice)
 			title = o.TSIN.Title
+			sku = o.MerchantSKU
+			if sku == "" {
+				sku = o.SKU
+			}
+			imageURL = o.TSIN.ImageURL
 		} else {
 			offerResp, err := e.api.GetOffersPage(1, 1, tsinID)
 			if err != nil || len(offerResp.Offers) == 0 {
@@ -352,6 +372,11 @@ func (e *Engine) executeRepriceCycle(ctx context.Context) {
 			offerID = strconv.FormatInt(curOffer.OfferID, 10)
 			curPrice = int(curOffer.SellingPrice)
 			title = curOffer.TSIN.Title
+			sku = curOffer.MerchantSKU
+			if sku == "" {
+				sku = curOffer.SKU
+			}
+			imageURL = curOffer.TSIN.ImageURL
 		}
 
 		e.mu.Lock()
@@ -424,7 +449,17 @@ func (e *Engine) executeRepriceCycle(ctx context.Context) {
 				e.totalRepriced++
 				e.mu.Unlock()
 				if e.db != nil {
-					_ = e.db.RecordReprice(key, tsinID, title, curPrice, newPrice, bestPrice, actionDesc)
+					actionType := "跟降"
+					if strings.Contains(actionDesc, "底价") {
+						actionType = "底价保护"
+					} else if newPrice > curPrice {
+						actionType = "跟涨"
+					}
+					storeName := e.storeName
+					if storeName == "" {
+						storeName = "Huihengxin"
+					}
+					_ = e.db.RecordReprice(key, tsinID, sku, title, imageURL, storeName, actionType, curPrice, newPrice, bestPrice, actionDesc)
 					_ = e.db.UpdateSingleMPV(tsinID, bestPrice, competing, "winning", 0)
 				}
 				e.Log(fmt.Sprintf("✅ [调价成功] %s... (TSIN:%s) | 原价: R%d -> 新价: R%d (RRP: R%d) | 原因: %s",

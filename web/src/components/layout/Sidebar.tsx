@@ -12,19 +12,17 @@ import {
   ShieldCheck,
 } from 'lucide-react'
 
-export type TabId = 'dashboard' | 'repricer' | 'catalog' | 'sales' | 'follow' | 'logs' | 'settings'
+export type TabId = 'dashboard' | 'repricer' | 'catalog' | 'sales' | 'follow' | 'settings'
 
 interface SidebarProps {
   activeTab: TabId
   onSelectTab: (tab: TabId) => void
-  unreadLogsCount?: number
   repricingAlertCount?: number
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
   activeTab,
   onSelectTab,
-  unreadLogsCount = 0,
   repricingAlertCount = 0,
 }) => {
   const navItems: {
@@ -36,12 +34,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
   }[] = [
     {
       id: 'dashboard',
-      label: '概览仪表盘',
+      label: '仪表盘',
       icon: <LayoutDashboard className="h-4 w-4 shrink-0" />,
     },
     {
       id: 'repricer',
-      label: '智能改价监控',
+      label: '自动竞价',
       icon: <TrendingUp className="h-4 w-4 shrink-0" />,
       badge: repricingAlertCount > 0 ? repricingAlertCount : undefined,
       badgeVariant: 'destructive',
@@ -53,20 +51,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
     },
     {
       id: 'sales',
-      label: '销售订单与明细',
+      label: '订单管理',
       icon: <ShoppingBag className="h-4 w-4 shrink-0" />,
     },
     {
       id: 'follow',
       label: '批量跟卖与队列',
       icon: <Layers className="h-4 w-4 shrink-0" />,
-    },
-    {
-      id: 'logs',
-      label: '实时运行日志',
-      icon: <Terminal className="h-4 w-4 shrink-0" />,
-      badge: unreadLogsCount > 0 ? unreadLogsCount : undefined,
-      badgeVariant: 'secondary',
     },
     {
       id: 'settings',

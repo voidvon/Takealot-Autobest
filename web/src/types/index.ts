@@ -3,6 +3,7 @@ export type PriorityStatus = 'winning' | 'losing' | 'solo'
 export interface OfferViewModel {
   key: string
   tsin_id: string
+  sku?: string
   plid: string
   title: string
   selling_price: number
@@ -175,7 +176,11 @@ export interface RepriceHistoryRecord {
   id: number
   target_key: string
   tsin_id: string
+  sku?: string
+  image_url?: string
   title: string
+  store_name?: string
+  action?: string
   old_price: number
   new_price: number
   competitor_price: number
@@ -226,5 +231,82 @@ export interface BatchStatusResponse {
       message: string
     }>
   }>
+}
+
+export interface LeadtimeOrderItem {
+  id: number
+  order_id: number
+  order_item_id: number
+  order_date: string
+  due_date: string
+  remaining_seconds: number
+  countdown_str: string
+  is_overdue: boolean
+  image_url: string
+  title: string
+  selling_price: number
+  actual_weight: number
+  volumetric_weight: number
+  weigh_status: 'pending' | 'done' | string
+  sku: string
+  store_name: string
+  tsin: string
+  offer_id: string
+  dc: string
+  leadtime_stock: number
+  demand_qty: number
+  ship_qty: number
+  status: string
+}
+
+export interface ShipmentItemRecord {
+  id?: number
+  shipment_id?: number
+  order_id: number
+  order_item_id: number
+  order_date: string
+  due_date: string
+  tsin: string
+  sku: string
+  title: string
+  image_url: string
+  selling_price: number
+  dc: string
+  leadtime_stock: number
+  demand_qty: number
+  ship_qty: number
+  actual_weight: number
+  volumetric_weight: number
+  weigh_status: 'pending' | 'done' | string
+  created_at?: string
+}
+
+export interface ShipmentRecord {
+  id: number
+  shipment_number: string
+  status: 'draft' | 'confirmed' | 'shipped' | 'delivered' | 'cancelled'
+  destination_dc: string
+  total_items: number
+  total_units: number
+  total_value: number
+  notes: string
+  items?: ShipmentItemRecord[]
+  created_at: string
+  updated_at: string
+}
+
+export interface BookingRecord {
+  id: number
+  booking_number: string
+  shipment_id?: number
+  shipment_no?: string
+  destination_dc: string
+  booking_date: string
+  time_slot: string
+  carrier_name: string
+  vehicle_reg: string
+  status: 'scheduled' | 'completed' | 'cancelled'
+  notes: string
+  created_at: string
 }
 
