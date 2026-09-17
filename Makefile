@@ -29,14 +29,14 @@ help:
 bump:
 	@echo "📌 当前版本计算结果: $(VERSION) (Git Tag: $(TAG))"
 
-dev:
+dev: build-frontend
 	@echo "🚀 正在启动开发模式..."
 	@lsof -ti :8000 | xargs kill -9 2>/dev/null || true
 	@go run -ldflags="-X main.Version=dev" .
 
 build-frontend:
 	@echo "🎨 正在构建现代化 Vite React 前端 (Base UI Nova 风格)..."
-	@cd web && npm run build
+	@cd web && ([ -d node_modules ] || npm install) && npm run build
 
 build: build-frontend
 	@echo "🔨 正在构建本地可执行程序 (v$(VERSION))..."
