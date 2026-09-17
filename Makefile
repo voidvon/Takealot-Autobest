@@ -77,7 +77,7 @@ release: build-frontend
 	@cd $(DIST_DIR) && zip -q -r Takealot-v$(VERSION)-linux-amd64.zip takealot config.example.json "待上传摸板.xlsx" README.md
 	@rm -f $(DIST_DIR)/takealot $(DIST_DIR)/config.example.json $(DIST_DIR)/"待上传摸板.xlsx" $(DIST_DIR)/README.md
 	@echo "3. 生成 Release Notes..."
-	@printf "## 🚀 %s 发布\n\n### ✨ 核心功能\n- **实时比价战况看板**：展示处于优先、失去优先、独家在售统计及竞品最优价差\n- **智能防亏底价保护**：针对单个商品配置独立保护底价，守住利润底线\n- **全自动跟价引擎**：毫秒级多协程轮询，自动下调/回调商品售价\n- **变体批量跟卖**：支持上传 Excel 自动识别 TSIN/PLID 变体并上架\n- **跨平台原生单文件**：零依赖运行，提供双击即用与 Web 控制台\n\n### 📦 资产下载 (统一 ZIP 格式)\n- **macOS (Apple Silicon arm64)**：\`Takealot-v%s-macOS-arm64.zip\` (解压即用)\n- **Windows (x64)**：\`Takealot-v%s-windows-amd64.zip\` (解压双击运行)\n- **Linux (x64)**：\`Takealot-v%s-linux-amd64.zip\` (解压运行)\n" "$(TAG)" "$(VERSION)" "$(VERSION)" "$(VERSION)" > $(DIST_DIR)/release_notes.md
+	@printf "## 🚀 %s 发布\n\n### ✨ 核心功能\n- **多店铺聚合管理**：支持多店铺快捷切换、各店铺独立配置与聚合数据看板\n- **软件授权与安全体系**：支持机器硬件指纹绑定、离线激活码验证与授权生命周期管理\n- **实时比价战况看板**：展示处于优先、失去优先、独家在售统计及竞品最优价差\n- **智能防亏底价保护**：支持按倍数批量计算与单品设置最低保护底价，守住利润底线\n- **全自动跟价引擎**：毫秒级多协程轮询，自动下调/回调商品售价\n- **变体批量跟卖**：支持上传 Excel 自动识别 TSIN/PLID 变体并上架\n- **跨平台原生单文件**：零依赖运行，提供双击即用与 Web 控制台\n\n### 📦 资产下载 (统一 ZIP 格式)\n- **macOS (Apple Silicon arm64)**：\`Takealot-v%s-macOS-arm64.zip\` (解压即用)\n- **Windows (x64)**：\`Takealot-v%s-windows-amd64.zip\` (解压双击运行)\n- **Linux (x64)**：\`Takealot-v%s-linux-amd64.zip\` (解压运行)\n" "$(TAG)" "$(VERSION)" "$(VERSION)" "$(VERSION)" > $(DIST_DIR)/release_notes.md
 	@echo "4. 更新 VERSION 文件与 Git 提交..."
 	@echo $(VERSION) > VERSION
 	@git add VERSION scripts/ Makefile main.go pkg/ web/ Takealot.command .gitignore README.md 2>/dev/null || true
