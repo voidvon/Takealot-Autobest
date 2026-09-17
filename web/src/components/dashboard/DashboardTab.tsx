@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { api } from '../../api/client'
+import { api, getActiveStoreId } from '../../api/client'
 import type { SalesSummaryItem, StockCounts, StockHealthStats, OfferViewModel } from '../../types'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '../ui/card'
 import { Button } from '../ui/button'
@@ -18,6 +18,7 @@ import {
   ShieldCheck,
   Clock,
   Coins,
+  Globe,
 } from 'lucide-react'
 
 interface DashboardTabProps {
@@ -101,9 +102,17 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({
       {/* Top Banner & Refresh */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-foreground">
-            控制中心概览
-          </h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-foreground">
+              控制中心概览
+            </h2>
+            {getActiveStoreId() === 'all' && (
+              <Badge variant="outline" className="bg-primary/10 text-primary border-primary/20 text-xs gap-1 font-normal py-0.5">
+                <Globe className="h-3 w-3" />
+                <span>全店铺聚合看板</span>
+              </Badge>
+            )}
+          </div>
           <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">
             Takealot 官方实时销售数据、多仓库存健康度与智能调价战况
           </p>

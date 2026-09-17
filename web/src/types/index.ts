@@ -19,6 +19,8 @@ export interface OfferViewModel {
   price_diff: number
   image_url?: string
   image_large_url?: string
+  store_id?: string
+  store_name?: string
 }
 
 export interface WarehouseStockDetail {
@@ -134,7 +136,26 @@ export interface StockHealthStats {
   recommended_for_replenishment_offer_count: number
 }
 
+export interface Store {
+  id: string
+  name: string
+  authorization: string
+  is_active: boolean
+  price_decrease_step: number
+  price_increase_step: number
+  rrp_percentage: number
+  interval_minutes: number
+  bulk_stock: number
+  max_fetch_offers: number
+  proxy_url?: string
+  created_at?: string
+  updated_at?: string
+  status?: EngineStatus
+}
+
 export interface EngineStatus {
+  store_id?: string
+  store_name?: string
   is_running: boolean
   is_paused: boolean
   total_checked: number
@@ -147,12 +168,15 @@ export interface LogEntry {
   time: string
   level: 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS'
   message: string
+  store_id?: string
+  store_name?: string
 }
 
 export interface TargetConfig {
   selected: boolean
   min_price: number
   max_price: number
+  store_id?: string
 }
 
 export interface SystemConfig {

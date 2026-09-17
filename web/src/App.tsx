@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
-import { api } from './api/client'
-import type { EngineStatus } from './types'
+import { api, getActiveStoreId, setActiveStoreId } from './api/client'
+import type { EngineStatus, Store } from './types'
 import { Header } from './components/layout/Header'
 import { Sidebar, type TabId } from './components/layout/Sidebar'
 import { DashboardTab } from './components/dashboard/DashboardTab'
@@ -9,16 +9,15 @@ import { CatalogTab } from './components/catalog/CatalogTab'
 import { SalesTab } from './components/sales/SalesTab'
 import { FollowTab } from './components/follow/FollowTab'
 import { SettingsTab } from './components/settings/SettingsTab'
+import { AddStoreModal } from './components/layout/AddStoreModal'
 
 const VALID_TABS: TabId[] = ['dashboard', 'repricer', 'catalog', 'sales', 'follow', 'settings']
 
 const getTabFromLocation = (): TabId => {
-  // 优先从 Hash 解析 (如 #/repricer 或 #repricer)
   const hash = window.location.hash.replace(/^#\/?/, '').toLowerCase()
   if (VALID_TABS.includes(hash as TabId)) {
     return hash as TabId
   }
-  // 备选从 Pathname 解析 (如 /repricer)
   const path = window.location.pathname.replace(/^\//, '').toLowerCase()
   if (VALID_TABS.includes(path as TabId)) {
     return path as TabId
@@ -31,6 +30,11 @@ export const App: React.FC = () => {
   const [version, setVersion] = useState('0.2.0')
   const [loadingAction, setLoadingAction] = useState(false)
 
+  // Multi-Store State
+  const [stores, setStores] = useState<Store[]>([])
+  const [currentStoreId, setCurrentStoreId] = useState<string>(() => getActiveStoreId())
+  const [isAddStoreOpen, setIsAddStoreOpen] = useState(false)
+
   const handleSelectTab = (tab: TabId) => {
     setActiveTabState(tab)
     if (window.location.hash !== `#/${tab}`) {
@@ -38,14 +42,13 @@ export const App: React.FC = () => {
     }
   }
 
-  // 监听浏览器 URL 路由变化（前进/后退/手动修改地址栏）
+  // 监听浏览器 URL 路由变化
   useEffect(() => {
     const handleUrlChange = () => {
       const tab = getTabFromLocation()
       setActiveTabState(tab)
     }
 
-    // 默认补全路由 Hash，便于收藏与刷新定位
     if (!window.location.hash) {
       window.location.hash = `/${getTabFromLocation()}`
     }
@@ -86,19 +89,57 @@ export const App: React.FC = () => {
     }
   }, [darkMode])
 
-  // Fetch version & initial status
+  // Load stores list
+  const loadStores = async () => {
+    try {
+      const res = await api.getStores()
+      if (res.stores && res.stores.length > 0) {
+        setStores(res.stores)
+        if (currentStoreId !== 'all') {
+          const exists = res.stores.find((s) => s.id === currentStoreId)
+          if (!exists) {
+            const nextId = res.active_store_id || res.stores[0].id
+            setCurrentStoreId(nextId)
+            setActiveStoreId(nextId)
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load stores:', err)
+    }
+  }
+
+  // Fetch version & initial status & stores
   useEffect(() => {
     api.getVersion().then((res) => {
       if (res.version) setVersion(res.version)
     }).catch(() => {})
 
-    // 页面载入时主动获取一次状态
+    loadStores()
+
     api.getRepriceStatus().then((s) => {
       if (s) setStatus(s)
     }).catch(() => {})
   }, [])
 
-  // 本地实时每秒倒计时 (每秒精确递减，不发任何网络请求)
+  // When currentStoreId changes, refresh status
+  useEffect(() => {
+    if (currentStoreId) {
+      api.getRepriceStatus().then((s) => {
+        if (s) setStatus(s)
+      }).catch(() => {})
+    }
+  }, [currentStoreId])
+
+  const handleSelectStore = (storeId: string) => {
+    setCurrentStoreId(storeId)
+    setActiveStoreId(storeId)
+    api.getRepriceStatus().then((s) => {
+      if (s) setStatus(s)
+    }).catch(() => {})
+  }
+
+  // 本地实时每秒倒计时
   useEffect(() => {
     if (!status.is_running || status.is_paused || status.countdown_seconds <= 0) return
 
@@ -115,7 +156,7 @@ export const App: React.FC = () => {
     return () => clearInterval(tickTimer)
   }, [status.is_running, status.is_paused, status.countdown_seconds])
 
-  // 智能校准：仅在引擎正在运行时每隔 15 秒校准一次；停止时彻底休眠，不发任何请求
+  // 智能校准
   useEffect(() => {
     if (!status.is_running) return
 
@@ -128,7 +169,6 @@ export const App: React.FC = () => {
 
     const intervalTimer = setInterval(syncCalibrate, 15000)
 
-    // 切回前台标签页时主动校准一次
     const handleVisibility = () => {
       if (!document.hidden) syncCalibrate()
     }
@@ -138,19 +178,19 @@ export const App: React.FC = () => {
       clearInterval(intervalTimer)
       document.removeEventListener('visibilitychange', handleVisibility)
     }
-  }, [status.is_running])
+  }, [status.is_running, currentStoreId])
 
-  // Engine controls
+  // Engine controls for active store
   const handleStartReprice = async () => {
     setLoadingAction(true)
     try {
       const res = await api.startReprice()
       if (res.success) {
         setStatus((prev) => ({ ...prev, is_running: true, is_paused: false }))
-        // 立即校准一次状态
         api.getRepriceStatus().then((s) => {
           if (s) setStatus(s)
         }).catch(() => {})
+        await loadStores()
       } else {
         alert(res.message || '启动失败')
       }
@@ -170,6 +210,7 @@ export const App: React.FC = () => {
         api.getRepriceStatus().then((s) => {
           if (s) setStatus(s)
         }).catch(() => {})
+        await loadStores()
       }
     } catch (e: any) {
       alert(`暂停操作失败: ${e.message}`)
@@ -184,6 +225,7 @@ export const App: React.FC = () => {
       const res = await api.stopReprice()
       if (res.success) {
         setStatus((prev) => ({ ...prev, is_running: false, is_paused: false, countdown_seconds: 0 }))
+        await loadStores()
       }
     } catch (e: any) {
       alert(`停止操作失败: ${e.message}`)
@@ -194,7 +236,7 @@ export const App: React.FC = () => {
 
   return (
     <div className="min-h-screen flex flex-col bg-background text-foreground">
-      {/* Top Header */}
+      {/* Top Header with Store Switcher */}
       <Header
         version={version}
         status={status}
@@ -204,6 +246,28 @@ export const App: React.FC = () => {
         darkMode={darkMode}
         onToggleDarkMode={() => setDarkMode(!darkMode)}
         loadingAction={loadingAction}
+        stores={stores}
+        currentStoreId={currentStoreId}
+        onSelectStore={handleSelectStore}
+        onOpenAddStore={() => setIsAddStoreOpen(true)}
+        onStartAllReprice={async () => {
+          try {
+            const res = await api.startAllReprice()
+            await loadStores()
+            alert(`已执行一键启动所有店铺巡检！\n\n${res.results.join('\n')}`)
+          } catch (e: any) {
+            alert(`操作失败: ${e.message}`)
+          }
+        }}
+        onStopAllReprice={async () => {
+          try {
+            const res = await api.stopAllReprice()
+            await loadStores()
+            alert(`已执行一键停止所有店铺巡检！\n\n${res.results.join('\n')}`)
+          } catch (e: any) {
+            alert(`操作失败: ${e.message}`)
+          }
+        }}
       />
 
       {/* Main Layout: Sidebar + Tab Content */}
@@ -213,8 +277,8 @@ export const App: React.FC = () => {
           onSelectTab={handleSelectTab}
         />
 
-        {/* Tab Content Area */}
-        <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-y-auto min-w-0">
+        {/* Tab Content Area: keyed with currentStoreId so switching store resets and reloads views cleanly */}
+        <main key={`${activeTab}-${currentStoreId}`} className="flex-1 p-4 sm:p-6 lg:p-8 overflow-y-auto min-w-0">
           {activeTab === 'dashboard' && (
             <DashboardTab
               onNavigate={handleSelectTab}
@@ -231,10 +295,29 @@ export const App: React.FC = () => {
 
           {activeTab === 'follow' && <FollowTab onNavigateLogs={() => handleSelectTab('repricer')} />}
 
-          {activeTab === 'settings' && <SettingsTab />}
+          {activeTab === 'settings' && (
+            <SettingsTab
+              stores={stores}
+              currentStoreId={currentStoreId}
+              onRefreshStores={loadStores}
+              onSelectStore={handleSelectStore}
+              onOpenAddStore={() => setIsAddStoreOpen(true)}
+            />
+          )}
         </main>
       </div>
+
+      {/* Global Add Store Modal (accessible from any tab / StoreSwitcher) */}
+      <AddStoreModal
+        open={isAddStoreOpen}
+        onOpenChange={setIsAddStoreOpen}
+        onSuccess={async (newStore) => {
+          await loadStores()
+          handleSelectStore(newStore.id)
+        }}
+      />
     </div>
   )
 }
+
 export default App

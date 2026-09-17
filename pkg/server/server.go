@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/xuri/excelize/v2"
@@ -19,7 +20,7 @@ import (
 
 type Server struct {
 	cfgMgr     *config.Manager
-	api        *api.Client
+	clientPool *api.ClientPool
 	eng        *engine.Engine
 	db         *db.DB
 	mux        *http.ServeMux
@@ -28,10 +29,10 @@ type Server struct {
 	version    string
 }
 
-func NewServer(cfgMgr *config.Manager, apiClient *api.Client, eng *engine.Engine, database *db.DB, distFS fs.FS, staticHTML []byte, version string) *Server {
+func NewServer(cfgMgr *config.Manager, clientPool *api.ClientPool, eng *engine.Engine, database *db.DB, distFS fs.FS, staticHTML []byte, version string) *Server {
 	s := &Server{
 		cfgMgr:     cfgMgr,
-		api:        apiClient,
+		clientPool: clientPool,
 		eng:        eng,
 		db:         database,
 		mux:        http.NewServeMux(),
@@ -41,6 +42,43 @@ func NewServer(cfgMgr *config.Manager, apiClient *api.Client, eng *engine.Engine
 	}
 	s.routes()
 	return s
+}
+
+func (s *Server) isAllStores(r *http.Request) bool {
+	storeID := strings.TrimSpace(r.Header.Get("X-Store-Id"))
+	if storeID == "" {
+		storeID = strings.TrimSpace(r.URL.Query().Get("store_id"))
+	}
+	return storeID == "all"
+}
+
+func (s *Server) getStoreContext(r *http.Request) (*db.Store, *api.Client, error) {
+	storeID := strings.TrimSpace(r.Header.Get("X-Store-Id"))
+	if storeID == "" {
+		storeID = strings.TrimSpace(r.URL.Query().Get("store_id"))
+	}
+	if storeID != "" && storeID != "all" {
+		st, err := s.db.GetStore(storeID)
+		if err == nil && st != nil {
+			client := s.clientPool.GetOrCreate(st.ID, st.Authorization, st.ProxyURL)
+			return st, client, nil
+		}
+	}
+	// Fallback to first store in DB
+	if s.db != nil {
+		stores, err := s.db.GetStores()
+		if err == nil && len(stores) > 0 {
+			st := &stores[0]
+			client := s.clientPool.GetOrCreate(st.ID, st.Authorization, st.ProxyURL)
+			return st, client, nil
+		}
+		defStore, err := s.db.EnsureDefaultStore("", 1, 1, 5, 1, 1000, 120.0)
+		if err == nil && defStore != nil {
+			client := s.clientPool.GetOrCreate(defStore.ID, defStore.Authorization, defStore.ProxyURL)
+			return defStore, client, nil
+		}
+	}
+	return nil, nil, fmt.Errorf("未找到有效店铺")
 }
 
 func (s *Server) Handler() http.Handler {
@@ -57,8 +95,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/reprice/start", s.handleRepriceStart)
 	s.mux.HandleFunc("/api/reprice/pause", s.handleRepricePause)
 	s.mux.HandleFunc("/api/reprice/stop", s.handleRepriceStop)
+	s.mux.HandleFunc("/api/reprice/start_all", s.handleRepriceStartAll)
+	s.mux.HandleFunc("/api/reprice/stop_all", s.handleRepriceStopAll)
 	s.mux.HandleFunc("/api/reprice/status", s.handleRepriceStatus)
 	s.mux.HandleFunc("/api/reprice/history", s.handleRepriceHistory)
+	s.mux.HandleFunc("/api/stores", s.handleStores)
+	s.mux.HandleFunc("/api/stores/test", s.handleStoreTest)
+	s.mux.HandleFunc("/api/stores/sync", s.handleStoreSync)
 	s.mux.HandleFunc("/api/follow/upload", s.handleFollowUpload)
 	s.mux.HandleFunc("/api/follow/start", s.handleFollowStart)
 	s.mux.HandleFunc("/api/follow/history", s.handleFollowHistory)
@@ -140,8 +183,22 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	store, client, _ := s.getStoreContext(r)
 	if r.Method == http.MethodGet {
-		jsonResponse(w, http.StatusOK, s.cfgMgr.Get())
+		cfg := s.cfgMgr.Get()
+		if store != nil {
+			cfg.Authorization = store.Authorization
+			cfg.PriceDecreaseStep = store.PriceDecreaseStep
+			cfg.PriceIncreaseStep = store.PriceIncreaseStep
+			cfg.RRPPercentage = store.RRPPercentage
+			cfg.IntervalMinutes = store.IntervalMinutes
+			cfg.BulkStock = store.BulkStock
+			cfg.MaxFetchOffers = store.MaxFetchOffers
+			if s.db != nil {
+				cfg.Targets, _ = s.db.LoadStoreTargets(store.ID)
+			}
+		}
+		jsonResponse(w, http.StatusOK, cfg)
 		return
 	}
 	if r.Method == http.MethodPost {
@@ -150,11 +207,32 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}
-		if err := s.cfgMgr.Update(newCfg); err != nil {
-			jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
+		if store != nil && s.db != nil {
+			store.Authorization = newCfg.Authorization
+			if newCfg.PriceDecreaseStep > 0 {
+				store.PriceDecreaseStep = newCfg.PriceDecreaseStep
+			}
+			if newCfg.PriceIncreaseStep > 0 {
+				store.PriceIncreaseStep = newCfg.PriceIncreaseStep
+			}
+			if newCfg.RRPPercentage >= 100 {
+				store.RRPPercentage = newCfg.RRPPercentage
+			}
+			if newCfg.IntervalMinutes > 0 {
+				store.IntervalMinutes = newCfg.IntervalMinutes
+			}
+			if newCfg.BulkStock > 0 {
+				store.BulkStock = newCfg.BulkStock
+			}
+			if newCfg.MaxFetchOffers > 0 {
+				store.MaxFetchOffers = newCfg.MaxFetchOffers
+			}
+			_ = s.db.SaveStore(*store)
+			if client != nil {
+				client.SetAuthorization(newCfg.Authorization)
+			}
 		}
-		s.api.SetAuthorization(newCfg.Authorization)
+		_ = s.cfgMgr.Update(newCfg)
 		s.eng.Log("⚙️ 系统配置已更新并保存", "INFO")
 		jsonResponse(w, http.StatusOK, map[string]any{"success": true, "message": "配置保存成功"})
 		return
@@ -167,11 +245,29 @@ func (s *Server) handleTestAuth(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	res := s.api.TestConnection()
+	store, client, err := s.getStoreContext(r)
+	if err != nil || client == nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"success": false, "message": "未获取到有效店铺客户端"})
+		return
+	}
+	res := client.TestConnection()
+	storeName := ""
+	storeID := ""
+	if store != nil {
+		storeName = store.Name
+		storeID = store.ID
+	}
 	if res.Success {
-		s.eng.Log(fmt.Sprintf("🔑 %s", res.Message), "SUCCESS")
+		if seller, err := client.GetSellerInfo(); err == nil && seller != nil && seller.DisplayName != "" {
+			if store != nil {
+				store.Name = seller.DisplayName
+				_ = s.db.SaveStore(*store)
+				storeName = seller.DisplayName
+			}
+		}
+		s.eng.Log(fmt.Sprintf("🔑 店铺 [%s] %s", storeName, res.Message), "SUCCESS", storeID, storeName)
 	} else {
-		s.eng.Log(fmt.Sprintf("⚠️ %s", res.Message), "WARN")
+		s.eng.Log(fmt.Sprintf("⚠️ 店铺 [%s] %s", storeName, res.Message), "WARN", storeID, storeName)
 	}
 	jsonResponse(w, http.StatusOK, res)
 }
@@ -194,6 +290,8 @@ type OfferViewModel struct {
 	PriceDiff       int    `json:"price_diff"`
 	ImageURL        string `json:"image_url"`
 	ImageLargeURL   string `json:"image_large_url"`
+	StoreID         string `json:"store_id,omitempty"`
+	StoreName       string `json:"store_name,omitempty"`
 }
 
 func (s *Server) handleOffers(w http.ResponseWriter, r *http.Request) {
@@ -202,13 +300,83 @@ func (s *Server) handleOffers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cfg := s.cfgMgr.Get()
-	targets := cfg.Targets
+	if s.isAllStores(r) {
+		stores, err := s.db.GetStores()
+		if err != nil || len(stores) == 0 {
+			jsonResponse(w, http.StatusOK, map[string]any{
+				"success": true,
+				"total":   0,
+				"offers":  []OfferViewModel{},
+				"source":  "cache",
+			})
+			return
+		}
+
+		storeNameMap := make(map[string]string)
+		for _, st := range stores {
+			storeNameMap[st.ID] = st.Name
+		}
+
+		allTargets, _ := s.db.LoadStoreTargets("all")
+		cached, err := s.db.LoadStoreCachedOffers("all")
+		if err == nil {
+			parsed := make([]OfferViewModel, 0, len(cached))
+			for _, c := range cached {
+				targetInfo := allTargets[c.StoreID+":"+c.Key]
+				if targetInfo.StoreID == "" {
+					targetInfo = allTargets[c.Key]
+				}
+				sName := storeNameMap[c.StoreID]
+				if sName == "" {
+					sName = c.StoreID
+				}
+				parsed = append(parsed, OfferViewModel{
+					Key:             c.Key,
+					TSINID:          c.TSINID,
+					PLID:            c.PLID,
+					Title:           c.Title,
+					SellingPrice:    c.SellingPrice,
+					RRP:             c.RRP,
+					Stock:           c.Stock,
+					DateModified:    c.DateModified,
+					Selected:        targetInfo.Selected,
+					MinPrice:        targetInfo.MinPrice,
+					MaxPrice:        targetInfo.MaxPrice,
+					BestPrice:       c.BestPrice,
+					CompetingOffers: c.CompetingOffers,
+					PriorityStatus:  c.PriorityStatus,
+					PriceDiff:       c.PriceDiff,
+					ImageURL:        c.ImageURL,
+					ImageLargeURL:   c.ImageLargeURL,
+					StoreID:         c.StoreID,
+					StoreName:       sName,
+				})
+			}
+			jsonResponse(w, http.StatusOK, map[string]any{
+				"success": true,
+				"total":   len(parsed),
+				"offers":  parsed,
+				"source":  "cache",
+			})
+			return
+		}
+	}
+
+	store, client, err := s.getStoreContext(r)
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"success": false, "error": err.Error()})
+		return
+	}
+
+	targets := make(map[string]config.Target)
+	if s.db != nil {
+		targets, _ = s.db.LoadStoreTargets(store.ID)
+	}
 	forceSync := r.URL.Query().Get("sync") == "true"
 
 	// 1. 优先从本地 SQLite 秒级读取（彻底消除打开页面发起 1000 次 API 的性能与限流问题）
 	if !forceSync && s.db != nil {
-		cached, err := s.db.LoadCachedOffers()
+		cached, err := s.db.LoadStoreCachedOffers(store.ID)
 		if err == nil && len(cached) > 0 {
 			parsed := make([]OfferViewModel, 0, len(cached))
 			for _, c := range cached {
@@ -231,6 +399,8 @@ func (s *Server) handleOffers(w http.ResponseWriter, r *http.Request) {
 					PriceDiff:       c.PriceDiff,
 					ImageURL:        c.ImageURL,
 					ImageLargeURL:   c.ImageLargeURL,
+					StoreID:         store.ID,
+					StoreName:       store.Name,
 				})
 			}
 			jsonResponse(w, http.StatusOK, map[string]any{
@@ -244,15 +414,12 @@ func (s *Server) handleOffers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. 本地尚无缓存或用户主动请求同步（sync=true）：
-	// 使用高效的分页批量拉取（1000 件商品仅需 10 次分页请求，约 2~3 秒完成）
-	maxFetch := cfg.MaxFetchOffers
+	maxFetch := store.MaxFetchOffers
 	if maxFetch <= 0 {
 		maxFetch = 1000
 	}
 
-	s.api.SetAuthorization(cfg.Authorization)
-
-	rawOffers, err := s.api.GetAllOffers(maxFetch)
+	rawOffers, err := client.GetAllOffers(maxFetch)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"success": false, "error": err.Error()})
 		return
@@ -284,13 +451,13 @@ func (s *Server) handleOffers(w http.ResponseWriter, r *http.Request) {
 
 	// 持久化到 SQLite（内部自动保留已有的竞品价格）
 	if s.db != nil {
-		_ = s.db.SaveCachedOffers(cachedItems)
+		_ = s.db.SaveStoreCachedOffers(store.ID, cachedItems)
 	}
 
 	// 从本地 SQLite 重载并组装返回，保证数据完整性
 	var parsed []OfferViewModel
 	if s.db != nil {
-		if reloaded, err := s.db.LoadCachedOffers(); err == nil && len(reloaded) > 0 {
+		if reloaded, err := s.db.LoadStoreCachedOffers(store.ID); err == nil && len(reloaded) > 0 {
 			parsed = make([]OfferViewModel, 0, len(reloaded))
 			for _, c := range reloaded {
 				targetInfo := targets[c.Key]
@@ -312,6 +479,8 @@ func (s *Server) handleOffers(w http.ResponseWriter, r *http.Request) {
 					PriceDiff:       c.PriceDiff,
 					ImageURL:        c.ImageURL,
 					ImageLargeURL:   c.ImageLargeURL,
+					StoreID:         store.ID,
+					StoreName:       store.Name,
 				})
 			}
 		}
@@ -326,27 +495,104 @@ func (s *Server) handleOffers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTargets(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+	if s.isAllStores(r) {
+		if r.Method == http.MethodGet {
+			targets, _ := s.db.LoadStoreTargets("all")
+			jsonResponse(w, http.StatusOK, targets)
+			return
+		}
+		if r.Method == http.MethodPost {
+			bodyBytes, err := io.ReadAll(r.Body)
+			if err != nil {
+				jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+				return
+			}
+
+			var wrapper struct {
+				Targets map[string]config.Target `json:"targets"`
+			}
+			targets := make(map[string]config.Target)
+			if err := json.Unmarshal(bodyBytes, &wrapper); err == nil && len(wrapper.Targets) > 0 {
+				targets = wrapper.Targets
+			} else {
+				_ = json.Unmarshal(bodyBytes, &targets)
+			}
+
+			storeTargets := make(map[string]map[string]config.Target)
+			for key, tgt := range targets {
+				stID := tgt.StoreID
+				cleanKey := key
+				if idx := strings.Index(cleanKey, ":"); idx > 0 {
+					if stID == "" {
+						stID = cleanKey[:idx]
+					}
+					cleanKey = cleanKey[idx+1:]
+				}
+				if stID == "" {
+					stID = "default"
+				}
+				if storeTargets[stID] == nil {
+					storeTargets[stID] = make(map[string]config.Target)
+				}
+				storeTargets[stID][cleanKey] = tgt
+			}
+
+			for stID, tgts := range storeTargets {
+				_ = s.db.SaveStoreTargets(stID, tgts)
+			}
+			s.eng.Log(fmt.Sprintf("💾 已保存全店铺监控配置（共 %d 个监控条目）", len(targets)), "INFO", "all", "全部店铺")
+			jsonResponse(w, http.StatusOK, map[string]any{"success": true, "message": "全店铺监控配置保存成功", "count": len(targets)})
+			return
+		}
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	var req struct {
-		Targets map[string]config.Target `json:"targets"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+
+	store, _, err := s.getStoreContext(r)
+	if err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
 
-	if err := s.cfgMgr.UpdateTargets(req.Targets); err != nil {
-		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+	if r.Method == http.MethodGet {
+		targets := make(map[string]config.Target)
+		if s.db != nil {
+			targets, _ = s.db.LoadStoreTargets(store.ID)
+		}
+		jsonResponse(w, http.StatusOK, targets)
 		return
 	}
-	if s.db != nil {
-		_ = s.db.SaveTargets(req.Targets)
+
+	if r.Method == http.MethodPost {
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+
+		var wrapper struct {
+			Targets map[string]config.Target `json:"targets"`
+		}
+		targets := make(map[string]config.Target)
+		if err := json.Unmarshal(bodyBytes, &wrapper); err == nil && len(wrapper.Targets) > 0 {
+			targets = wrapper.Targets
+		} else {
+			_ = json.Unmarshal(bodyBytes, &targets)
+		}
+
+		if s.db != nil {
+			if err := s.db.SaveStoreTargets(store.ID, targets); err != nil {
+				jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": fmt.Sprintf("SQLite 写入失败: %v", err)})
+				return
+			}
+		}
+		_ = s.cfgMgr.UpdateTargets(targets)
+		s.eng.Log(fmt.Sprintf("💾 店铺 [%s] 已保存 %d 个监控商品配置至数据库", store.Name, len(targets)), "INFO", store.ID, store.Name)
+		jsonResponse(w, http.StatusOK, map[string]any{"success": true, "message": "监控商品保存成功", "count": len(targets)})
+		return
 	}
-	s.eng.Log(fmt.Sprintf("💾 已保存 %d 个监控商品配置至 SQLite 数据库", len(req.Targets)), "INFO")
-	jsonResponse(w, http.StatusOK, map[string]any{"success": true, "message": "监控商品保存成功"})
+
+	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 }
 
 func (s *Server) handleRepriceStart(w http.ResponseWriter, r *http.Request) {
@@ -354,7 +600,17 @@ func (s *Server) handleRepriceStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	ok, msg := s.eng.StartReprice()
+	if s.isAllStores(r) {
+		results := s.eng.StartAll()
+		jsonResponse(w, http.StatusOK, map[string]any{"success": true, "message": "已启动全部店铺巡检", "results": results})
+		return
+	}
+	store, _, _ := s.getStoreContext(r)
+	storeID := "default"
+	if store != nil {
+		storeID = store.ID
+	}
+	ok, msg := s.eng.StartReprice(storeID)
 	jsonResponse(w, http.StatusOK, map[string]any{"success": ok, "message": msg})
 }
 
@@ -363,7 +619,17 @@ func (s *Server) handleRepricePause(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	ok, msg := s.eng.PauseReprice()
+	if s.isAllStores(r) {
+		results := s.eng.PauseAll()
+		jsonResponse(w, http.StatusOK, map[string]any{"success": true, "message": "已切换全部店铺巡检暂停状态", "results": results})
+		return
+	}
+	store, _, _ := s.getStoreContext(r)
+	storeID := "default"
+	if store != nil {
+		storeID = store.ID
+	}
+	ok, msg := s.eng.PauseReprice(storeID)
 	jsonResponse(w, http.StatusOK, map[string]any{"success": ok, "message": msg})
 }
 
@@ -372,12 +638,49 @@ func (s *Server) handleRepriceStop(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	ok, msg := s.eng.StopReprice()
+	if s.isAllStores(r) {
+		results := s.eng.StopAll()
+		jsonResponse(w, http.StatusOK, map[string]any{"success": true, "message": "已停止全部店铺巡检", "results": results})
+		return
+	}
+	store, _, _ := s.getStoreContext(r)
+	storeID := "default"
+	if store != nil {
+		storeID = store.ID
+	}
+	ok, msg := s.eng.StopReprice(storeID)
 	jsonResponse(w, http.StatusOK, map[string]any{"success": ok, "message": msg})
 }
 
+func (s *Server) handleRepriceStartAll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	results := s.eng.StartAll()
+	jsonResponse(w, http.StatusOK, map[string]any{"success": true, "results": results})
+}
+
+func (s *Server) handleRepriceStopAll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	results := s.eng.StopAll()
+	jsonResponse(w, http.StatusOK, map[string]any{"success": true, "results": results})
+}
+
 func (s *Server) handleRepriceStatus(w http.ResponseWriter, r *http.Request) {
-	jsonResponse(w, http.StatusOK, s.eng.GetStatus())
+	if s.isAllStores(r) {
+		jsonResponse(w, http.StatusOK, s.eng.GetStatus("all"))
+		return
+	}
+	store, _, _ := s.getStoreContext(r)
+	storeID := "default"
+	if store != nil {
+		storeID = store.ID
+	}
+	jsonResponse(w, http.StatusOK, s.eng.GetStatus(storeID))
 }
 
 func (s *Server) handleFollowUpload(w http.ResponseWriter, r *http.Request) {
@@ -467,6 +770,12 @@ func (s *Server) handleFollowStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	store, _, _ := s.getStoreContext(r)
+	storeID := "default"
+	if store != nil {
+		storeID = store.ID
+	}
+
 	var req struct {
 		Items []engine.FollowItem `json:"items"`
 	}
@@ -475,7 +784,7 @@ func (s *Server) handleFollowStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ok, msg := s.eng.RunFollowBatch(req.Items)
+	ok, msg := s.eng.RunFollowBatch(storeID, req.Items)
 	jsonResponse(w, http.StatusOK, map[string]any{"success": ok, "message": msg})
 }
 
@@ -531,7 +840,12 @@ func (s *Server) handleOfficialOffers(w http.ResponseWriter, r *http.Request) {
 	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
 	filter := r.URL.Query().Get("filter")
 
-	res, err := s.api.GetOfficialOffers(page, pageSize, filter)
+	_, client, err := s.getStoreContext(r)
+	if err != nil || client == nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "店铺未连接"})
+		return
+	}
+	res, err := client.GetOfficialOffers(page, pageSize, filter)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"success": false, "error": err.Error()})
 		return
@@ -544,7 +858,43 @@ func (s *Server) handleOfficialOffersCount(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	count, err := s.api.GetOfficialOffersCount()
+
+	if s.isAllStores(r) {
+		stores, err := s.db.GetStores()
+		if err != nil || len(stores) == 0 {
+			jsonResponse(w, http.StatusOK, map[string]any{"count": 0})
+			return
+		}
+		totalCount := 0
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		for _, st := range stores {
+			if st.Authorization == "" {
+				continue
+			}
+			wg.Add(1)
+			go func(store db.Store) {
+				defer wg.Done()
+				client := s.clientPool.GetOrCreate(store.ID, store.Authorization, store.ProxyURL)
+				count, err := client.GetOfficialOffersCount()
+				if err == nil {
+					mu.Lock()
+					totalCount += count
+					mu.Unlock()
+				}
+			}(st)
+		}
+		wg.Wait()
+		jsonResponse(w, http.StatusOK, map[string]any{"count": totalCount})
+		return
+	}
+
+	_, client, err := s.getStoreContext(r)
+	if err != nil || client == nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "店铺未连接"})
+		return
+	}
+	count, err := client.GetOfficialOffersCount()
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"success": false, "error": err.Error()})
 		return
@@ -559,6 +909,7 @@ func (s *Server) handleOfficialOfferUpdate(w http.ResponseWriter, r *http.Reques
 	}
 	var req struct {
 		OfferID      string         `json:"offer_id"`
+		StoreID      string         `json:"store_id,omitempty"`
 		SellingPrice *int           `json:"selling_price,omitempty"`
 		RRP          *int           `json:"rrp,omitempty"`
 		LeadtimeDays *int           `json:"leadtime_days,omitempty"`
@@ -590,7 +941,18 @@ func (s *Server) handleOfficialOfferUpdate(w http.ResponseWriter, r *http.Reques
 		payload[k] = v
 	}
 
-	if err := s.api.UpdateSingleOffer(req.OfferID, payload); err != nil {
+	_, client, cErr := s.getStoreContext(r)
+	if (cErr != nil || client == nil) && req.StoreID != "" {
+		if st, sErr := s.db.GetStore(req.StoreID); sErr == nil && st != nil {
+			client = s.clientPool.GetOrCreate(st.ID, st.Authorization, st.ProxyURL)
+			cErr = nil
+		}
+	}
+	if cErr != nil || client == nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "店铺未连接"})
+		return
+	}
+	if err := client.UpdateSingleOffer(req.OfferID, payload); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"success": false, "error": err.Error()})
 		return
 	}
@@ -608,7 +970,12 @@ func (s *Server) handleOfficialSales(w http.ResponseWriter, r *http.Request) {
 	startDate := r.URL.Query().Get("start_date")
 	endDate := r.URL.Query().Get("end_date")
 
-	res, err := s.api.GetSales(page, pageSize, startDate, endDate)
+	_, client, err := s.getStoreContext(r)
+	if err != nil || client == nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "店铺未连接"})
+		return
+	}
+	res, err := client.GetSales(page, pageSize, startDate, endDate)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"success": false, "error": err.Error()})
 		return
@@ -621,7 +988,72 @@ func (s *Server) handleOfficialSalesSummary(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	summary, err := s.api.GetSalesSummary()
+
+	if s.isAllStores(r) {
+		stores, err := s.db.GetStores()
+		if err != nil || len(stores) == 0 {
+			jsonResponse(w, http.StatusOK, []any{})
+			return
+		}
+
+		type result struct {
+			items []api.SalesSummaryItem
+			err   error
+		}
+		ch := make(chan result, len(stores))
+		var wg sync.WaitGroup
+
+		for _, st := range stores {
+			if st.Authorization == "" {
+				continue
+			}
+			wg.Add(1)
+			go func(store db.Store) {
+				defer wg.Done()
+				client := s.clientPool.GetOrCreate(store.ID, store.Authorization, store.ProxyURL)
+				items, err := client.GetSalesSummary()
+				ch <- result{items: items, err: err}
+			}(st)
+		}
+
+		wg.Wait()
+		close(ch)
+
+		summaryMap := make(map[string]*api.SalesSummaryItem)
+		orderList := []string{}
+
+		for res := range ch {
+			if res.err != nil || res.items == nil {
+				continue
+			}
+			for _, item := range res.items {
+				if _, exists := summaryMap[item.DateRange]; !exists {
+					summaryMap[item.DateRange] = &api.SalesSummaryItem{
+						DateRange: item.DateRange,
+						Total:     0,
+						Quantity:  0,
+					}
+					orderList = append(orderList, item.DateRange)
+				}
+				summaryMap[item.DateRange].Total += item.Total
+				summaryMap[item.DateRange].Quantity += item.Quantity
+			}
+		}
+
+		combined := make([]api.SalesSummaryItem, 0, len(orderList))
+		for _, dr := range orderList {
+			combined = append(combined, *summaryMap[dr])
+		}
+		jsonResponse(w, http.StatusOK, combined)
+		return
+	}
+
+	_, client, err := s.getStoreContext(r)
+	if err != nil || client == nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "店铺未连接"})
+		return
+	}
+	summary, err := client.GetSalesSummary()
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"success": false, "error": err.Error()})
 		return
@@ -639,7 +1071,45 @@ func (s *Server) handleOfficialSalesOrders(w http.ResponseWriter, r *http.Reques
 	startDate := r.URL.Query().Get("start_date")
 	endDate := r.URL.Query().Get("end_date")
 
-	orders, err := s.api.GetSalesOrders(startDate, endDate, page, pageSize)
+	if s.isAllStores(r) {
+		stores, err := s.db.GetStores()
+		if err != nil || len(stores) == 0 {
+			jsonResponse(w, http.StatusOK, api.SalesOrdersResponse{})
+			return
+		}
+		var combined api.SalesOrdersResponse
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		for _, st := range stores {
+			if st.Authorization == "" {
+				continue
+			}
+			wg.Add(1)
+			go func(store db.Store) {
+				defer wg.Done()
+				client := s.clientPool.GetOrCreate(store.ID, store.Authorization, store.ProxyURL)
+				orders, err := client.GetSalesOrders(startDate, endDate, page, pageSize)
+				if err == nil && orders != nil {
+					mu.Lock()
+					combined.PageSummary.Total += orders.PageSummary.Total
+					combined.Orders = append(combined.Orders, orders.Orders...)
+					mu.Unlock()
+				}
+			}(st)
+		}
+		wg.Wait()
+		combined.PageSummary.PageNumber = page
+		combined.PageSummary.PageSize = pageSize
+		jsonResponse(w, http.StatusOK, combined)
+		return
+	}
+
+	_, client, err := s.getStoreContext(r)
+	if err != nil || client == nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "店铺未连接"})
+		return
+	}
+	orders, err := client.GetSalesOrders(startDate, endDate, page, pageSize)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"success": false, "error": err.Error()})
 		return
@@ -658,7 +1128,12 @@ func (s *Server) handleOfficialCustomerInvoices(w http.ResponseWriter, r *http.R
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "order_id is required"})
 		return
 	}
-	invoices, err := s.api.GetCustomerInvoices(orderID)
+	_, client, err := s.getStoreContext(r)
+	if err != nil || client == nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "店铺未连接"})
+		return
+	}
+	invoices, err := client.GetCustomerInvoices(orderID)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"success": false, "error": err.Error()})
 		return
@@ -671,7 +1146,44 @@ func (s *Server) handleOfficialStockCounts(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	res, err := s.api.GetStockCounts()
+
+	if s.isAllStores(r) {
+		stores, err := s.db.GetStores()
+		if err != nil || len(stores) == 0 {
+			jsonResponse(w, http.StatusOK, api.StockCounts{})
+			return
+		}
+		var combined api.StockCounts
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		for _, st := range stores {
+			if st.Authorization == "" {
+				continue
+			}
+			wg.Add(1)
+			go func(store db.Store) {
+				defer wg.Done()
+				client := s.clientPool.GetOrCreate(store.ID, store.Authorization, store.ProxyURL)
+				counts, err := client.GetStockCounts()
+				if err == nil && counts != nil {
+					mu.Lock()
+					combined.TotalStockCount += counts.TotalStockCount
+					combined.UnbalancedStockCount += counts.UnbalancedStockCount
+					mu.Unlock()
+				}
+			}(st)
+		}
+		wg.Wait()
+		jsonResponse(w, http.StatusOK, combined)
+		return
+	}
+
+	_, client, err := s.getStoreContext(r)
+	if err != nil || client == nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "店铺未连接"})
+		return
+	}
+	res, err := client.GetStockCounts()
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"success": false, "error": err.Error()})
 		return
@@ -684,7 +1196,44 @@ func (s *Server) handleOfficialStockHealth(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	res, err := s.api.GetStockHealthStats()
+
+	if s.isAllStores(r) {
+		stores, err := s.db.GetStores()
+		if err != nil || len(stores) == 0 {
+			jsonResponse(w, http.StatusOK, api.StockHealthStats{})
+			return
+		}
+		var combined api.StockHealthStats
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		for _, st := range stores {
+			if st.Authorization == "" {
+				continue
+			}
+			wg.Add(1)
+			go func(store db.Store) {
+				defer wg.Done()
+				client := s.clientPool.GetOrCreate(store.ID, store.Authorization, store.ProxyURL)
+				health, err := client.GetStockHealthStats()
+				if err == nil && health != nil {
+					mu.Lock()
+					combined.StorageFeeEnabledOfferCount += health.StorageFeeEnabledOfferCount
+					combined.RecommendedForReplenishmentOfferCount += health.RecommendedForReplenishmentOfferCount
+					mu.Unlock()
+				}
+			}(st)
+		}
+		wg.Wait()
+		jsonResponse(w, http.StatusOK, combined)
+		return
+	}
+
+	_, client, err := s.getStoreContext(r)
+	if err != nil || client == nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "店铺未连接"})
+		return
+	}
+	res, err := client.GetStockHealthStats()
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"success": false, "error": err.Error()})
 		return
@@ -701,11 +1250,20 @@ func (s *Server) handleRepriceHistory(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusOK, []any{})
 		return
 	}
+	storeID := ""
+	if !s.isAllStores(r) {
+		store, _, _ := s.getStoreContext(r)
+		if store != nil {
+			storeID = store.ID
+		}
+	} else {
+		storeID = "all"
+	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 {
-		limit = 50
+		limit = 100
 	}
-	records, err := s.db.GetRecentRepriceHistory(limit)
+	records, err := s.db.GetStoreRepriceHistory(storeID, limit)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -722,11 +1280,20 @@ func (s *Server) handleFollowHistory(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusOK, []any{})
 		return
 	}
+	storeID := ""
+	if !s.isAllStores(r) {
+		store, _, _ := s.getStoreContext(r)
+		if store != nil {
+			storeID = store.ID
+		}
+	} else {
+		storeID = "all"
+	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 {
 		limit = 50
 	}
-	records, err := s.db.GetRecentFollowHistory(limit)
+	records, err := s.db.GetStoreFollowHistory(storeID, limit)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -744,7 +1311,12 @@ func (s *Server) handleOfficialOfferSingle(w http.ResponseWriter, r *http.Reques
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "identifier is required"})
 		return
 	}
-	res, err := s.api.GetOfficialSingleOffer(identifier)
+	_, client, err := s.getStoreContext(r)
+	if err != nil || client == nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "店铺未连接"})
+		return
+	}
+	res, err := client.GetOfficialSingleOffer(identifier)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -789,7 +1361,12 @@ func (s *Server) handleOfficialOfferCreate(w http.ResponseWriter, r *http.Reques
 		payload["leadtime_stock"] = req.LeadtimeStock
 	}
 
-	res, err := s.api.CreateOfficialSingleOffer(req.Barcode, payload)
+	_, client, err := s.getStoreContext(r)
+	if err != nil || client == nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "店铺未连接"})
+		return
+	}
+	res, err := client.CreateOfficialSingleOffer(req.Barcode, payload)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"success": false, "error": err.Error()})
 		return
@@ -815,7 +1392,12 @@ func (s *Server) handleOfficialOfferStatus(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := s.api.UpdateOfficialOfferStatus(req.Identifier, req.Action); err != nil {
+	_, client, cErr := s.getStoreContext(r)
+	if cErr != nil || client == nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "店铺未连接"})
+		return
+	}
+	if err := client.UpdateOfficialOfferStatus(req.Identifier, req.Action); err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"success": false, "error": err.Error()})
 		return
 	}
@@ -840,7 +1422,12 @@ func (s *Server) handleOfficialOfferBatch(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	res, err := s.api.CreateOfficialBatch(req.Offers)
+	store, client, err := s.getStoreContext(r)
+	if err != nil || client == nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "店铺未连接"})
+		return
+	}
+	res, err := client.CreateOfficialBatch(req.Offers)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"success": false, "error": err.Error()})
 		return
@@ -862,7 +1449,7 @@ func (s *Server) handleOfficialOfferBatch(w http.ResponseWriter, r *http.Request
 		if actionType == "" {
 			actionType = "batch_update"
 		}
-		_ = s.db.RecordBatchJob(batchID, actionType, len(req.Offers), status)
+		_ = s.db.RecordStoreBatchJob(store.ID, batchID, actionType, len(req.Offers), status)
 	}
 
 	jsonResponse(w, http.StatusOK, res)
@@ -879,7 +1466,12 @@ func (s *Server) handleOfficialBatchStatus(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	res, err := s.api.GetOfficialBatch(batchID)
+	_, client, err := s.getStoreContext(r)
+	if err != nil || client == nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "店铺未连接"})
+		return
+	}
+	res, err := client.GetOfficialBatch(batchID)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -913,7 +1505,12 @@ func (s *Server) handleOfficialBatchList(w http.ResponseWriter, r *http.Request)
 	if limit <= 0 {
 		limit = 50
 	}
-	records, err := s.db.GetRecentBatchJobs(limit)
+	store, _, _ := s.getStoreContext(r)
+	storeID := ""
+	if store != nil {
+		storeID = store.ID
+	}
+	records, err := s.db.GetStoreBatchJobs(storeID, limit)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -982,13 +1579,18 @@ func (s *Server) handleLeadtimeOrders(w http.ResponseWriter, r *http.Request) {
 	var resultItems []LeadtimeOrderItem
 
 	// 1. 尝试从 Takealot 官方 API 获取销售订单
-	if s.api != nil {
+	store, client, _ := s.getStoreContext(r)
+	if client != nil {
 		startDate := now.AddDate(0, 0, -14).Format("2006-01-02")
 		endDate := now.Format("2006-01-02")
-		salesResp, err := s.api.GetSales(1, 100, startDate, endDate)
+		salesResp, err := client.GetSales(1, 100, startDate, endDate)
 		if err == nil && salesResp != nil && len(salesResp.Sales) > 0 {
 			// 加载本地商品缓存，补充图片与提前库存
-			cachedOffers, _ := s.db.LoadCachedOffers()
+			storeID := "default"
+			if store != nil {
+				storeID = store.ID
+			}
+			cachedOffers, _ := s.db.LoadStoreCachedOffers(storeID)
 			cacheMap := make(map[string]db.CachedOffer)
 			for _, co := range cachedOffers {
 				cacheMap[co.TSINID] = co
@@ -1181,8 +1783,13 @@ func (s *Server) handleShipments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	store, _, _ := s.getStoreContext(r)
+	storeID := ""
+	if store != nil {
+		storeID = store.ID
+	}
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
-	list, err := s.db.GetShipments(status)
+	list, err := s.db.GetStoreShipments(storeID, status)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -1230,9 +1837,9 @@ func (s *Server) handleShipments(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 		shipmentNo := fmt.Sprintf("SH-JHB-%d", time.Now().Unix()%1000000)
-		created, _ := s.db.CreateShipment(shipmentNo, "draft", "JHB", "待送约堡仓常规批次", demoItems)
+		created, _ := s.db.CreateStoreShipment(storeID, shipmentNo, "draft", "JHB", "待送约堡仓常规批次", demoItems)
 		if created != nil {
-			list, _ = s.db.GetShipments(status)
+			list, _ = s.db.GetStoreShipments(storeID, status)
 		}
 		_ = nowStr
 	}
@@ -1273,7 +1880,12 @@ func (s *Server) handleShipmentCreate(w http.ResponseWriter, r *http.Request) {
 		req.Status = "draft"
 	}
 
-	shipment, err := s.db.CreateShipment(req.ShipmentNumber, req.Status, req.DestinationDC, req.Notes, req.Items)
+	store, _, _ := s.getStoreContext(r)
+	storeID := "default"
+	if store != nil {
+		storeID = store.ID
+	}
+	shipment, err := s.db.CreateStoreShipment(storeID, req.ShipmentNumber, req.Status, req.DestinationDC, req.Notes, req.Items)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -1377,10 +1989,11 @@ func (s *Server) handleOfferQuickUpdate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	_, client, _ := s.getStoreContext(r)
 	// 1. 如果有改价
 	if req.SellingPrice > 0 {
-		if s.api != nil {
-			_ = s.api.UpdateOfferPrice(targetOfferID, req.SellingPrice, req.RRP)
+		if client != nil {
+			_ = client.UpdateOfferPrice(targetOfferID, req.SellingPrice, req.RRP)
 		}
 	}
 
@@ -1393,8 +2006,8 @@ func (s *Server) handleOfferQuickUpdate(w http.ResponseWriter, r *http.Request) 
 		if req.LeadtimeStock > 0 {
 			payload["leadtime_stock"] = req.LeadtimeStock
 		}
-		if s.api != nil {
-			_ = s.api.UpdateSingleOffer(targetOfferID, payload)
+		if client != nil {
+			_ = client.UpdateSingleOffer(targetOfferID, payload)
 		}
 	}
 
@@ -1413,7 +2026,12 @@ func (s *Server) handleBookings(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusOK, []any{})
 		return
 	}
-	list, err := s.db.GetBookings()
+	store, _, _ := s.getStoreContext(r)
+	storeID := ""
+	if store != nil {
+		storeID = store.ID
+	}
+	list, err := s.db.GetStoreBookings(storeID)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -1422,9 +2040,9 @@ func (s *Server) handleBookings(w http.ResponseWriter, r *http.Request) {
 	// 若空，初始化一条示例预约
 	if len(list) == 0 {
 		tomorrow := time.Now().Add(24 * time.Hour).Format("2006-01-02")
-		b, _ := s.db.CreateBooking(1, "JHB", tomorrow, "10:00 - 12:00", "Courier Guy", "GP 882-901", "预约送约堡1号中转仓")
+		b, _ := s.db.CreateStoreBooking(storeID, 1, "JHB", tomorrow, "10:00 - 12:00", "Courier Guy", "GP 882-901", "预约送约堡1号中转仓")
 		if b != nil {
-			list, _ = s.db.GetBookings()
+			list, _ = s.db.GetStoreBookings(storeID)
 		}
 	}
 
@@ -1456,7 +2074,12 @@ func (s *Server) handleBookingCreate(w http.ResponseWriter, r *http.Request) {
 		req.BookingDate = time.Now().Add(24 * time.Hour).Format("2006-01-02")
 	}
 
-	b, err := s.db.CreateBooking(req.ShipmentID, req.DC, req.BookingDate, req.TimeSlot, req.Carrier, req.VehicleReg, req.Notes)
+	store, _, _ := s.getStoreContext(r)
+	storeID := "default"
+	if store != nil {
+		storeID = store.ID
+	}
+	b, err := s.db.CreateStoreBooking(storeID, req.ShipmentID, req.DC, req.BookingDate, req.TimeSlot, req.Carrier, req.VehicleReg, req.Notes)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -1508,3 +2131,178 @@ func (s *Server) handleBookingDelete(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{"success": true})
 }
 
+
+// ----------------------------------------------------
+// 多店铺管理 (Stores Management Handlers)
+// ----------------------------------------------------
+
+func (s *Server) handleStores(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		if s.db == nil {
+			jsonResponse(w, http.StatusOK, map[string]any{"stores": []any{}})
+			return
+		}
+		stores, err := s.db.GetStores()
+		if err != nil {
+			jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+
+		type StoreWithStatus struct {
+			db.Store
+			Status engine.Status `json:"status"`
+		}
+		resList := make([]StoreWithStatus, 0, len(stores))
+		for _, st := range stores {
+			stStatus := s.eng.GetStatus(st.ID)
+			resList = append(resList, StoreWithStatus{
+				Store:  st,
+				Status: stStatus,
+			})
+		}
+		activeID := "default"
+		if len(stores) > 0 {
+			activeID = stores[0].ID
+		}
+		jsonResponse(w, http.StatusOK, map[string]any{
+			"success":         true,
+			"stores":          resList,
+			"active_store_id": activeID,
+		})
+
+	case http.MethodPost:
+		var req db.Store
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		if req.ID == "" {
+			req.ID = fmt.Sprintf("store_%d", time.Now().Unix())
+		}
+		if req.Name == "" {
+			req.Name = "未命名店铺"
+		}
+		if req.Authorization != "" {
+			tempClient := api.NewClient(req.Authorization, req.ProxyURL)
+			if seller, err := tempClient.GetSellerInfo(); err == nil && seller != nil && seller.DisplayName != "" {
+				req.Name = seller.DisplayName
+			}
+		}
+		if err := s.db.SaveStore(req); err != nil {
+			jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		s.clientPool.GetOrCreate(req.ID, req.Authorization, req.ProxyURL)
+		s.eng.Log(fmt.Sprintf("🏪 成功添加新店铺: [%s] (ID: %s)", req.Name, req.ID), "SUCCESS", req.ID, req.Name)
+		jsonResponse(w, http.StatusOK, map[string]any{
+			"success": true,
+			"message": "店铺添加成功",
+			"store":   req,
+		})
+
+	case http.MethodPut:
+		var req db.Store
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		if req.ID == "" {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "店铺 ID 不能为空"})
+			return
+		}
+		if err := s.db.SaveStore(req); err != nil {
+			jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		s.clientPool.GetOrCreate(req.ID, req.Authorization, req.ProxyURL)
+		s.eng.Log(fmt.Sprintf("🏪 店铺 [%s] 配置已更新", req.Name), "INFO", req.ID, req.Name)
+		jsonResponse(w, http.StatusOK, map[string]any{
+			"success": true,
+			"message": "店铺更新成功",
+			"store":   req,
+		})
+
+	case http.MethodDelete:
+		id := r.URL.Query().Get("id")
+		if id == "" {
+			var body struct {
+				ID string `json:"id"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			id = body.ID
+		}
+		if id == "" {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "未提供要删除的店铺 ID"})
+			return
+		}
+		s.eng.StopReprice(id)
+		if err := s.db.DeleteStore(id); err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		s.clientPool.Remove(id)
+		s.eng.Log(fmt.Sprintf("🗑️ 已删除店铺 (ID: %s)", id), "WARN", id)
+		jsonResponse(w, http.StatusOK, map[string]any{
+			"success": true,
+			"message": "店铺已删除",
+		})
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleStoreTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Authorization string `json:"authorization"`
+		ProxyURL      string `json:"proxy_url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if req.Authorization == "" {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "Authorization 不能为空"})
+		return
+	}
+	tempClient := api.NewClient(req.Authorization, req.ProxyURL)
+	res := tempClient.TestConnection()
+	displayName := ""
+	if res.Success {
+		if seller, err := tempClient.GetSellerInfo(); err == nil && seller != nil {
+			displayName = seller.DisplayName
+		}
+	}
+	jsonResponse(w, http.StatusOK, map[string]any{
+		"success":      res.Success,
+		"message":      res.Message,
+		"display_name": displayName,
+		"total_offers": res.TotalOffers,
+	})
+}
+
+func (s *Server) handleStoreSync(w http.ResponseWriter, r *http.Request) {
+	store, client, err := s.getStoreContext(r)
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	seller, err := client.GetSellerInfo()
+	if err != nil || seller == nil || seller.DisplayName == "" {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "无法从 Takealot 获取店铺信息，请检查授权凭证"})
+		return
+	}
+	oldName := store.Name
+	store.Name = seller.DisplayName
+	_ = s.db.SaveStore(*store)
+	s.eng.Log(fmt.Sprintf("🔄 店铺名称已从 [%s] 同步更新为 [%s]", oldName, store.Name), "SUCCESS", store.ID, store.Name)
+	jsonResponse(w, http.StatusOK, map[string]any{
+		"success": true,
+		"name":    store.Name,
+	})
+}

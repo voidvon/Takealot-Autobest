@@ -1,5 +1,6 @@
 import React from 'react'
-import type { EngineStatus } from '../../types'
+import type { EngineStatus, Store } from '../../types'
+import { StoreSwitcher } from './StoreSwitcher'
 import { Button } from '../ui/button'
 import { Badge } from '../ui/badge'
 import { Play, Pause, Square, Moon, Sun } from 'lucide-react'
@@ -14,6 +15,12 @@ interface HeaderProps {
   darkMode: boolean
   onToggleDarkMode: () => void
   loadingAction: boolean
+  stores?: Store[]
+  currentStoreId?: string
+  onSelectStore?: (storeId: string) => void
+  onOpenAddStore?: () => void
+  onStartAllReprice?: () => void
+  onStopAllReprice?: () => void
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -25,6 +32,12 @@ export const Header: React.FC<HeaderProps> = ({
   darkMode,
   onToggleDarkMode,
   loadingAction,
+  stores = [],
+  currentStoreId = '',
+  onSelectStore,
+  onOpenAddStore,
+  onStartAllReprice,
+  onStopAllReprice,
 }) => {
 
   return (
@@ -36,13 +49,27 @@ export const Header: React.FC<HeaderProps> = ({
             T
           </div>
           <div className="flex items-center gap-2">
-            <h1 className="font-semibold text-sm text-foreground tracking-tight">
+            <h1 className="font-semibold text-sm text-foreground tracking-tight hidden md:inline">
               Takealot 智能电商自动化中台
             </h1>
-            <Badge variant="secondary" className="hidden sm:inline-flex text-[10px] font-mono px-1.5 h-4.5">
+            <Badge variant="secondary" className="hidden lg:inline-flex text-[10px] font-mono px-1.5 h-4.5">
               v{version}
             </Badge>
           </div>
+
+          {/* Multi-Store Switcher */}
+          {stores.length > 0 && onSelectStore && onOpenAddStore && (
+            <div className="pl-1 sm:pl-2 sm:border-l sm:border-border/60">
+              <StoreSwitcher
+                stores={stores}
+                currentStoreId={currentStoreId}
+                onSelectStore={onSelectStore}
+                onOpenAddStore={onOpenAddStore}
+                onStartAllReprice={onStartAllReprice}
+                onStopAllReprice={onStopAllReprice}
+              />
+            </div>
+          )}
         </div>
 
         {/* Engine Live Metrics & Controls */}

@@ -14,28 +14,29 @@ import (
 )
 
 type LogEntry struct {
-	Time    string `json:"time"`
-	Level   string `json:"level"`
-	Message string `json:"message"`
+	Time      string `json:"time"`
+	Level     string `json:"level"`
+	Message   string `json:"message"`
+	StoreID   string `json:"store_id,omitempty"`
+	StoreName string `json:"store_name,omitempty"`
 }
 
 type Status struct {
-	IsRunning        bool      `json:"is_running"`
-	IsPaused         bool      `json:"is_paused"`
-	FollowRunning    bool      `json:"follow_running"`
-	LastRunTime      *string   `json:"last_run_time"`
-	NextRunTime      *string   `json:"next_run_time"`
-	CountdownSeconds int       `json:"countdown_seconds"`
-	TotalChecked     int       `json:"total_checked"`
-	TotalRepriced    int       `json:"total_repriced"`
-	TotalFollowed    int       `json:"total_followed"`
+	StoreID          string  `json:"store_id"`
+	StoreName        string  `json:"store_name"`
+	IsRunning        bool    `json:"is_running"`
+	IsPaused         bool    `json:"is_paused"`
+	FollowRunning    bool    `json:"follow_running"`
+	LastRunTime      *string `json:"last_run_time"`
+	NextRunTime      *string `json:"next_run_time"`
+	CountdownSeconds int     `json:"countdown_seconds"`
+	TotalChecked     int     `json:"total_checked"`
+	TotalRepriced    int     `json:"total_repriced"`
+	TotalFollowed    int     `json:"total_followed"`
 }
 
-type Engine struct {
-	cfgMgr *config.Manager
-	api    *api.Client
-	db     *db.DB
-
+type StoreWorker struct {
+	storeID       string
 	mu            sync.RWMutex
 	isRunning     bool
 	isPaused      bool
@@ -48,27 +49,65 @@ type Engine struct {
 	totalRepriced int
 	totalFollowed int
 	storeName     string
+}
+
+type Engine struct {
+	cfgMgr     *config.Manager
+	clientPool *api.ClientPool
+	db         *db.DB
+
+	workerMu sync.RWMutex
+	workers  map[string]*StoreWorker
 
 	logMu       sync.RWMutex
 	logs        []LogEntry
 	subscribers map[chan LogEntry]struct{}
 }
 
-func NewEngine(cfgMgr *config.Manager, apiClient *api.Client, database *db.DB) *Engine {
+func NewEngine(cfgMgr *config.Manager, clientPool *api.ClientPool, database *db.DB) *Engine {
 	return &Engine{
 		cfgMgr:      cfgMgr,
-		api:         apiClient,
+		clientPool:  clientPool,
 		db:          database,
+		workers:     make(map[string]*StoreWorker),
 		logs:        make([]LogEntry, 0, 500),
 		subscribers: make(map[chan LogEntry]struct{}),
 	}
 }
 
-func (e *Engine) Log(message, level string) {
+func (e *Engine) getOrCreateWorker(storeID string) *StoreWorker {
+	if storeID == "" {
+		storeID = "default"
+	}
+	e.workerMu.Lock()
+	defer e.workerMu.Unlock()
+
+	if w, ok := e.workers[storeID]; ok {
+		return w
+	}
+	w := &StoreWorker{
+		storeID: storeID,
+	}
+	if e.db != nil {
+		if st, err := e.db.GetStore(storeID); err == nil && st != nil {
+			w.storeName = st.Name
+		}
+	}
+	e.workers[storeID] = w
+	return w
+}
+
+func (e *Engine) Log(message, level string, storeInfo ...string) {
 	entry := LogEntry{
 		Time:    time.Now().Format("15:04:05"),
 		Level:   level,
 		Message: message,
+	}
+	if len(storeInfo) > 0 && storeInfo[0] != "" {
+		entry.StoreID = storeInfo[0]
+	}
+	if len(storeInfo) > 1 && storeInfo[1] != "" {
+		entry.StoreName = storeInfo[1]
 	}
 
 	e.logMu.Lock()
@@ -82,7 +121,6 @@ func (e *Engine) Log(message, level string) {
 	}
 	e.logMu.Unlock()
 
-	// Broadcast non-blocking
 	for _, ch := range subs {
 		select {
 		case ch <- entry:
@@ -114,95 +152,253 @@ func (e *Engine) GetRecentLogs() []LogEntry {
 	return copied
 }
 
-func (e *Engine) StartReprice() (bool, string) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+func (e *Engine) StartReprice(storeID string) (bool, string) {
+	w := e.getOrCreateWorker(storeID)
+	w.mu.Lock()
+	defer w.mu.Unlock()
 
-	if e.isRunning {
-		if e.isPaused {
-			e.isPaused = false
-			e.Log("▶️ 自动改价监控已从暂停状态恢复", "INFO")
+	if w.isRunning {
+		if w.isPaused {
+			w.isPaused = false
+			e.Log("▶️ 自动改价监控已从暂停状态恢复", "INFO", w.storeID, w.storeName)
 			return true, "已恢复运行"
 		}
 		return false, "监控已在运行中"
 	}
 
-	e.isRunning = true
-	e.isPaused = false
+	w.isRunning = true
+	w.isPaused = false
 	ctx, cancel := context.WithCancel(context.Background())
-	e.cancelReprice = cancel
+	w.cancelReprice = cancel
 
-	go e.repriceLoop(ctx)
-	e.Log("🚀 启动自动调价监控任务...", "INFO")
+	go e.repriceLoop(ctx, w)
+	e.Log(fmt.Sprintf("🚀 启动店铺 [%s] 的自动调价监控任务...", w.storeName), "INFO", w.storeID, w.storeName)
 	return true, "监控已成功启动"
 }
 
-func (e *Engine) PauseReprice() (bool, string) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+func (e *Engine) PauseReprice(storeID string) (bool, string) {
+	w := e.getOrCreateWorker(storeID)
+	w.mu.Lock()
+	defer w.mu.Unlock()
 
-	if !e.isRunning {
+	if !w.isRunning {
 		return false, "监控未在运行"
 	}
-	e.isPaused = !e.isPaused
+	w.isPaused = !w.isPaused
 	statusStr := "已暂停"
-	if !e.isPaused {
+	if !w.isPaused {
 		statusStr = "已恢复"
 	}
-	e.Log(fmt.Sprintf("⏸️ 监控状态变更: %s", statusStr), "WARN")
+	e.Log(fmt.Sprintf("⏸️ 店铺 [%s] 监控状态变更: %s", w.storeName, statusStr), "WARN", w.storeID, w.storeName)
 	return true, fmt.Sprintf("监控%s", statusStr)
 }
 
-func (e *Engine) StopReprice() (bool, string) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+func (e *Engine) StopReprice(storeID string) (bool, string) {
+	w := e.getOrCreateWorker(storeID)
+	w.mu.Lock()
+	defer w.mu.Unlock()
 
-	if !e.isRunning {
+	if !w.isRunning {
 		return false, "监控当前未运行"
 	}
-	e.isRunning = false
-	e.isPaused = false
-	if e.cancelReprice != nil {
-		e.cancelReprice()
+	w.isRunning = false
+	w.isPaused = false
+	if w.cancelReprice != nil {
+		w.cancelReprice()
 	}
-	e.nextRunTime = time.Time{}
-	e.Log("⏹️ 监控已停止", "WARN")
+	w.nextRunTime = time.Time{}
+	e.Log(fmt.Sprintf("⏹️ 店铺 [%s] 监控已停止", w.storeName), "WARN", w.storeID, w.storeName)
 	return true, "已停止监控"
 }
 
-func (e *Engine) GetStatus() Status {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
+func (e *Engine) StartAll() []string {
+	var results []string
+	if e.db == nil {
+		return results
+	}
+	stores, err := e.db.GetStores()
+	if err != nil {
+		return results
+	}
+	for _, st := range stores {
+		if st.IsActive {
+			ok, msg := e.StartReprice(st.ID)
+			if ok {
+				results = append(results, fmt.Sprintf("[%s]: %s", st.Name, msg))
+			}
+		}
+	}
+	return results
+}
+
+func (e *Engine) StopAll() []string {
+	var results []string
+	if e.db == nil {
+		return results
+	}
+	stores, err := e.db.GetStores()
+	if err != nil {
+		return results
+	}
+	for _, st := range stores {
+		w := e.getOrCreateWorker(st.ID)
+		w.mu.RLock()
+		running := w.isRunning
+		w.mu.RUnlock()
+		if running {
+			_, msg := e.StopReprice(st.ID)
+			results = append(results, fmt.Sprintf("[%s]: %s", st.Name, msg))
+		}
+	}
+	return results
+}
+
+func (e *Engine) PauseAll() []string {
+	var results []string
+	if e.db == nil {
+		return results
+	}
+	stores, err := e.db.GetStores()
+	if err != nil {
+		return results
+	}
+	for _, st := range stores {
+		w := e.getOrCreateWorker(st.ID)
+		w.mu.RLock()
+		running := w.isRunning
+		w.mu.RUnlock()
+		if running {
+			_, msg := e.PauseReprice(st.ID)
+			results = append(results, fmt.Sprintf("[%s]: %s", st.Name, msg))
+		}
+	}
+	return results
+}
+
+func (e *Engine) GetAllStatus() Status {
+	e.workerMu.RLock()
+	defer e.workerMu.RUnlock()
+
+	totalChecked := 0
+	totalRepriced := 0
+	totalFollowed := 0
+	anyRunning := false
+	allPaused := true
+	minCountdown := 999999
+	var latestLast *time.Time
+	var earliestNext *time.Time
+
+	activeCount := 0
+	for _, w := range e.workers {
+		w.mu.RLock()
+		activeCount++
+		totalChecked += w.totalChecked
+		totalRepriced += w.totalRepriced
+		totalFollowed += w.totalFollowed
+
+		if w.isRunning {
+			anyRunning = true
+			if !w.isPaused {
+				allPaused = false
+			}
+			if !w.nextRunTime.IsZero() {
+				diff := int(time.Until(w.nextRunTime).Seconds())
+				if diff > 0 && diff < minCountdown {
+					minCountdown = diff
+				}
+				if earliestNext == nil || w.nextRunTime.Before(*earliestNext) {
+					t := w.nextRunTime
+					earliestNext = &t
+				}
+			}
+		}
+		if !w.lastRunTime.IsZero() {
+			if latestLast == nil || w.lastRunTime.After(*latestLast) {
+				t := w.lastRunTime
+				latestLast = &t
+			}
+		}
+		w.mu.RUnlock()
+	}
+
+	if activeCount == 0 || !anyRunning {
+		allPaused = false
+	}
+	if minCountdown == 999999 {
+		minCountdown = 0
+	}
+
+	var lastStr, nextStr *string
+	if latestLast != nil {
+		s := latestLast.Format("2006-01-02 15:04:05")
+		lastStr = &s
+	}
+	if earliestNext != nil && anyRunning {
+		s := earliestNext.Format("2006-01-02 15:04:05")
+		nextStr = &s
+	}
+
+	return Status{
+		StoreID:          "all",
+		StoreName:        "全部店铺",
+		IsRunning:        anyRunning,
+		IsPaused:         allPaused,
+		CountdownSeconds: minCountdown,
+		TotalChecked:     totalChecked,
+		TotalRepriced:    totalRepriced,
+		TotalFollowed:    totalFollowed,
+		LastRunTime:      lastStr,
+		NextRunTime:      nextStr,
+	}
+}
+
+func (e *Engine) GetStatus(storeID string) Status {
+	if storeID == "all" {
+		return e.GetAllStatus()
+	}
+
+	w := e.getOrCreateWorker(storeID)
+	w.mu.RLock()
+	defer w.mu.RUnlock()
 
 	var lastStr, nextStr *string
 	countdown := 0
-	if !e.lastRunTime.IsZero() {
-		s := e.lastRunTime.Format("2006-01-02 15:04:05")
+	if !w.lastRunTime.IsZero() {
+		s := w.lastRunTime.Format("2006-01-02 15:04:05")
 		lastStr = &s
 	}
-	if !e.nextRunTime.IsZero() && e.isRunning {
-		s := e.nextRunTime.Format("2006-01-02 15:04:05")
+	if !w.nextRunTime.IsZero() && w.isRunning {
+		s := w.nextRunTime.Format("2006-01-02 15:04:05")
 		nextStr = &s
-		diff := time.Until(e.nextRunTime).Seconds()
+		diff := time.Until(w.nextRunTime).Seconds()
 		if diff > 0 {
 			countdown = int(diff)
 		}
 	}
 
+	name := w.storeName
+	if name == "" && e.db != nil {
+		if st, err := e.db.GetStore(w.storeID); err == nil && st != nil {
+			name = st.Name
+		}
+	}
+
 	return Status{
-		IsRunning:        e.isRunning,
-		IsPaused:         e.isPaused,
-		FollowRunning:    e.followRunning,
+		StoreID:          w.storeID,
+		StoreName:        name,
+		IsRunning:        w.isRunning,
+		IsPaused:         w.isPaused,
+		FollowRunning:    w.followRunning,
 		LastRunTime:      lastStr,
 		NextRunTime:      nextStr,
 		CountdownSeconds: countdown,
-		TotalChecked:     e.totalChecked,
-		TotalRepriced:    e.totalRepriced,
-		TotalFollowed:    e.totalFollowed,
+		TotalChecked:     w.totalChecked,
+		TotalRepriced:    w.totalRepriced,
+		TotalFollowed:    w.totalFollowed,
 	}
 }
 
-func (e *Engine) repriceLoop(ctx context.Context) {
+func (e *Engine) repriceLoop(ctx context.Context, w *StoreWorker) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -210,23 +406,23 @@ func (e *Engine) repriceLoop(ctx context.Context) {
 		default:
 		}
 
-		cfg := e.cfgMgr.Get()
-		interval := cfg.IntervalMinutes
-		if interval < 1 {
-			interval = 5
+		interval := 5
+		if e.db != nil {
+			if st, err := e.db.GetStore(w.storeID); err == nil && st != nil && st.IntervalMinutes > 0 {
+				interval = st.IntervalMinutes
+			}
 		}
 
-		e.mu.Lock()
-		e.lastRunTime = time.Now()
-		e.nextRunTime = e.lastRunTime.Add(time.Duration(interval) * time.Minute)
-		isPaused := e.isPaused
-		e.mu.Unlock()
+		w.mu.Lock()
+		w.lastRunTime = time.Now()
+		w.nextRunTime = w.lastRunTime.Add(time.Duration(interval) * time.Minute)
+		isPaused := w.isPaused
+		w.mu.Unlock()
 
 		if !isPaused {
-			e.executeRepriceCycle(ctx)
+			e.executeRepriceCycle(ctx, w)
 		}
 
-		// Sleep in 1-second chunks for responsive cancellation
 		sleepDuration := time.Duration(interval) * time.Minute
 		ticker := time.NewTicker(1 * time.Second)
 		startTime := time.Now()
@@ -247,34 +443,52 @@ func (e *Engine) repriceLoop(ctx context.Context) {
 	}
 }
 
-func (e *Engine) executeRepriceCycle(ctx context.Context) {
-	cfg := e.cfgMgr.Get()
+func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
+	if e.db == nil {
+		return
+	}
+
+	store, err := e.db.GetStore(w.storeID)
+	if err != nil || store == nil {
+		e.Log(fmt.Sprintf("❌ 未找到店铺 [%s] 的配置信息", w.storeID), "ERROR", w.storeID, w.storeName)
+		return
+	}
+
+	w.storeName = store.Name
+	apiClient := e.clientPool.GetOrCreate(store.ID, store.Authorization, store.ProxyURL)
+
+	targetsMap, err := e.db.LoadStoreTargets(w.storeID)
+	if err != nil {
+		return
+	}
+
 	activeTargets := make(map[string]config.Target)
-	for k, v := range cfg.Targets {
+	for k, v := range targetsMap {
 		if v.Selected {
 			activeTargets[k] = v
 		}
 	}
 
 	if len(activeTargets) == 0 {
-		e.Log("ℹ️ 当前未勾选任何监控商品，跳过本轮改价（请在商品列表勾选监控项）", "INFO")
+		e.Log(fmt.Sprintf("ℹ️ 店铺 [%s] 当前未勾选任何监控商品，跳过本轮改价", store.Name), "INFO", w.storeID, store.Name)
 		return
 	}
 
-	e.Log(fmt.Sprintf("🔍 开始执行新一轮调价巡检，已勾选监控商品: %d 个...", len(activeTargets)), "INFO")
-	decreaseStep := cfg.PriceDecreaseStep
-	increaseStep := cfg.PriceIncreaseStep
-	rrpRatio := cfg.RRPPercentage / 100.0
+	e.Log(fmt.Sprintf("🔍 店铺 [%s] 开始执行新一轮调价巡检，已勾选监控商品: %d 个...", store.Name, len(activeTargets)), "INFO", w.storeID, store.Name)
+	decreaseStep := store.PriceDecreaseStep
+	increaseStep := store.PriceIncreaseStep
+	rrpRatio := store.RRPPercentage / 100.0
 
-	// 缓存店铺名称
-	if e.storeName == "" {
-		if seller, err := e.api.GetSellerInfo(); err == nil && seller != nil && seller.DisplayName != "" {
-			e.storeName = seller.DisplayName
+	// 缓存店铺在线名称
+	if w.storeName == "默认店铺" || w.storeName == "" {
+		if seller, err := apiClient.GetSellerInfo(); err == nil && seller != nil && seller.DisplayName != "" {
+			w.storeName = seller.DisplayName
+			store.Name = seller.DisplayName
+			_ = e.db.SaveStore(*store)
 		}
 	}
 
-	// 1. 批量拉取自身商品在售状态（1000件商品仅需10次请求，省去原先循环中1000次单品请求）
-	maxFetch := cfg.MaxFetchOffers
+	maxFetch := store.MaxFetchOffers
 	if maxFetch < len(activeTargets) {
 		maxFetch = len(activeTargets) + 200
 	}
@@ -283,7 +497,7 @@ func (e *Engine) executeRepriceCycle(ctx context.Context) {
 	}
 
 	offerMap := make(map[string]api.OfferItem)
-	rawOffers, err := e.api.GetAllOffers(maxFetch)
+	rawOffers, err := apiClient.GetAllOffers(maxFetch)
 	if err == nil && len(rawOffers) > 0 {
 		cachedItems := make([]db.CachedOffer, 0, len(rawOffers))
 		for _, o := range rawOffers {
@@ -295,6 +509,7 @@ func (e *Engine) executeRepriceCycle(ctx context.Context) {
 				sku = o.SKU
 			}
 			cachedItems = append(cachedItems, db.CachedOffer{
+				StoreID:         w.storeID,
 				Key:             fmt.Sprintf("%s/%s", tsinStr, plidStr),
 				TSINID:          tsinStr,
 				SKU:             sku,
@@ -312,9 +527,7 @@ func (e *Engine) executeRepriceCycle(ctx context.Context) {
 				ImageLargeURL:   api.GetLargeImageURL(o.TSIN.ImageURL),
 			})
 		}
-		if e.db != nil {
-			_ = e.db.SaveCachedOffers(cachedItems)
-		}
+		_ = e.db.SaveStoreCachedOffers(w.storeID, cachedItems)
 	}
 
 	for key, target := range activeTargets {
@@ -324,14 +537,14 @@ func (e *Engine) executeRepriceCycle(ctx context.Context) {
 		default:
 		}
 
-		e.mu.RLock()
-		isPaused := e.isPaused
-		e.mu.RUnlock()
+		w.mu.RLock()
+		isPaused := w.isPaused
+		w.mu.RUnlock()
 		for isPaused {
 			time.Sleep(1 * time.Second)
-			e.mu.RLock()
-			isPaused = e.isPaused
-			e.mu.RUnlock()
+			w.mu.RLock()
+			isPaused = w.isPaused
+			w.mu.RUnlock()
 			select {
 			case <-ctx.Done():
 				return
@@ -347,7 +560,6 @@ func (e *Engine) executeRepriceCycle(ctx context.Context) {
 		}
 		minPrice := target.MinPrice
 
-		// 1. 获取商品当前自身价格（优先内存 Map，未命中才调单品接口）
 		var curPrice int
 		var offerID string
 		var title string
@@ -364,7 +576,7 @@ func (e *Engine) executeRepriceCycle(ctx context.Context) {
 			}
 			imageURL = o.TSIN.ImageURL
 		} else {
-			offerResp, err := e.api.GetOffersPage(1, 1, tsinID)
+			offerResp, err := apiClient.GetOffersPage(1, 1, tsinID)
 			if err != nil || len(offerResp.Offers) == 0 {
 				continue
 			}
@@ -379,12 +591,11 @@ func (e *Engine) executeRepriceCycle(ctx context.Context) {
 			imageURL = curOffer.TSIN.ImageURL
 		}
 
-		e.mu.Lock()
-		e.totalChecked++
-		e.mu.Unlock()
+		w.mu.Lock()
+		w.totalChecked++
+		w.mu.Unlock()
 
-		// 2. 查询竞品最新价格 (MPV)
-		mpv, err := e.api.GetMPVByTSIN(tsinID)
+		mpv, err := apiClient.GetMPVByTSIN(tsinID)
 		bestPrice := 0
 		competing := 1
 		if err == nil && mpv != nil {
@@ -392,12 +603,10 @@ func (e *Engine) executeRepriceCycle(ctx context.Context) {
 			competing = api.AnyToInt(mpv.CompetingOffers)
 		}
 
-		// 备选公开价格兜底
 		if bestPrice <= 0 && plid != "" {
-			bestPrice = e.api.GetPublicPrice(plid)
+			bestPrice = apiClient.GetPublicPrice(plid)
 		}
 
-		// 计算竞争状态并立即写入本地 SQLite 缓存，让前端页面随时展示最新战况
 		priority := "solo"
 		diff := 0
 		if competing > 1 {
@@ -412,17 +621,16 @@ func (e *Engine) executeRepriceCycle(ctx context.Context) {
 				priority = "winning"
 			}
 		}
-		if e.db != nil && bestPrice > 0 {
-			_ = e.db.UpdateSingleMPV(tsinID, bestPrice, competing, priority, diff)
+		if bestPrice > 0 {
+			_ = e.db.UpdateStoreSingleMPV(w.storeID, tsinID, bestPrice, competing, priority, diff)
 		}
 
 		if bestPrice <= 0 {
-			e.Log(fmt.Sprintf("[%s] 未获取到竞品价格 (TSIN: %s)", truncate(title, 20), tsinID), "DEBUG")
+			e.Log(fmt.Sprintf("[%s] 未获取到竞品价格 (TSIN: %s)", truncate(title, 20), tsinID), "DEBUG", w.storeID, w.storeName)
 			time.Sleep(300 * time.Millisecond)
 			continue
 		}
 
-		// 3. 调价决策逻辑
 		newPrice := -1
 		actionDesc := ""
 
@@ -441,45 +649,40 @@ func (e *Engine) executeRepriceCycle(ctx context.Context) {
 			}
 		}
 
-		// 4. 执行更新
 		if newPrice > 0 && newPrice != curPrice {
 			rrp := int(float64(newPrice) * rrpRatio)
-			if err := e.api.UpdateOfferPrice(offerID, newPrice, rrp); err == nil {
-				e.mu.Lock()
-				e.totalRepriced++
-				e.mu.Unlock()
-				if e.db != nil {
-					actionType := "跟降"
-					if strings.Contains(actionDesc, "底价") {
-						actionType = "底价保护"
-					} else if newPrice > curPrice {
-						actionType = "跟涨"
-					}
-					storeName := e.storeName
-					if storeName == "" {
-						storeName = "Huihengxin"
-					}
-					_ = e.db.RecordReprice(key, tsinID, sku, title, imageURL, storeName, actionType, curPrice, newPrice, bestPrice, actionDesc)
-					_ = e.db.UpdateSingleMPV(tsinID, bestPrice, competing, "winning", 0)
+			if err := apiClient.UpdateOfferPrice(offerID, newPrice, rrp); err == nil {
+				w.mu.Lock()
+				w.totalRepriced++
+				w.mu.Unlock()
+
+				actionType := "跟降"
+				if strings.Contains(actionDesc, "底价") {
+					actionType = "底价保护"
+				} else if newPrice > curPrice {
+					actionType = "跟涨"
 				}
+				_ = e.db.RecordStoreReprice(w.storeID, key, tsinID, sku, title, imageURL, w.storeName, actionType, curPrice, newPrice, bestPrice, actionDesc)
+				_ = e.db.UpdateStoreSingleMPV(w.storeID, tsinID, bestPrice, competing, "winning", 0)
+
 				e.Log(fmt.Sprintf("✅ [调价成功] %s... (TSIN:%s) | 原价: R%d -> 新价: R%d (RRP: R%d) | 原因: %s",
-					truncate(title, 22), tsinID, curPrice, newPrice, rrp, actionDesc), "SUCCESS")
+					truncate(title, 22), tsinID, curPrice, newPrice, rrp, actionDesc), "SUCCESS", w.storeID, w.storeName)
 			} else {
-				e.Log(fmt.Sprintf("❌ [调价失败] %s...: %v", truncate(title, 22), err), "ERROR")
+				e.Log(fmt.Sprintf("❌ [调价失败] %s...: %v", truncate(title, 22), err), "ERROR", w.storeID, w.storeName)
 			}
 		} else {
 			e.Log(fmt.Sprintf("✓ [%s] 价格保持 R%d (竞品 R%d, 底价保护 R%d)",
-				truncate(title, 20), curPrice, bestPrice, minPrice), "DEBUG")
+				truncate(title, 20), curPrice, bestPrice, minPrice), "DEBUG", w.storeID, w.storeName)
 		}
 
 		time.Sleep(300 * time.Millisecond)
 	}
 
-	e.mu.RLock()
-	checked := e.totalChecked
-	repriced := e.totalRepriced
-	e.mu.RUnlock()
-	e.Log(fmt.Sprintf("🏁 本轮巡检完成！累计巡检: %d 次，累计改价: %d 次", checked, repriced), "INFO")
+	w.mu.RLock()
+	checked := w.totalChecked
+	repriced := w.totalRepriced
+	w.mu.RUnlock()
+	e.Log(fmt.Sprintf("🏁 店铺 [%s] 本轮巡检完成！累计巡检: %d 次，累计改价: %d 次", w.storeName, checked, repriced), "INFO", w.storeID, w.storeName)
 }
 
 type FollowItem struct {
@@ -488,27 +691,35 @@ type FollowItem struct {
 	MinPrice int    `json:"min_price"`
 }
 
-func (e *Engine) RunFollowBatch(items []FollowItem) (bool, string) {
-	e.mu.Lock()
-	if e.followRunning {
-		e.mu.Unlock()
+func (e *Engine) RunFollowBatch(storeID string, items []FollowItem) (bool, string) {
+	w := e.getOrCreateWorker(storeID)
+	w.mu.Lock()
+	if w.followRunning {
+		w.mu.Unlock()
 		return false, "跟卖任务正在运行中"
 	}
-	e.followRunning = true
-	e.mu.Unlock()
+	w.followRunning = true
+	w.mu.Unlock()
 
-	go e.executeFollowBatch(items)
+	go e.executeFollowBatch(w, items)
 	return true, "跟卖任务已在后台启动"
 }
 
-func (e *Engine) executeFollowBatch(items []FollowItem) {
+func (e *Engine) executeFollowBatch(w *StoreWorker, items []FollowItem) {
 	defer func() {
-		e.mu.Lock()
-		e.followRunning = false
-		e.mu.Unlock()
+		w.mu.Lock()
+		w.followRunning = false
+		w.mu.Unlock()
 	}()
 
-	e.Log(fmt.Sprintf("🛒 开始执行批量跟卖任务，共 %d 条目标...", len(items)), "INFO")
+	store, err := e.db.GetStore(w.storeID)
+	if err != nil || store == nil {
+		e.Log("❌ 未找到店铺配置", "ERROR", w.storeID, w.storeName)
+		return
+	}
+	apiClient := e.clientPool.GetOrCreate(store.ID, store.Authorization, store.ProxyURL)
+
+	e.Log(fmt.Sprintf("🛒 店铺 [%s] 开始执行批量跟卖任务，共 %d 条目标...", store.Name, len(items)), "INFO", w.storeID, store.Name)
 	successCount := 0
 	newTargets := make(map[string]config.Target)
 
@@ -532,10 +743,10 @@ func (e *Engine) executeFollowBatch(items []FollowItem) {
 			continue
 		}
 
-		e.Log(fmt.Sprintf("[%d/%d] 正在查询 PLID: %s 的商品变体...", idx+1, len(items), cleanPLID), "INFO")
-		results, err := e.api.GetMPVByPLID(cleanPLID)
+		e.Log(fmt.Sprintf("[%d/%d] 正在查询 PLID: %s 的商品变体...", idx+1, len(items), cleanPLID), "INFO", w.storeID, store.Name)
+		results, err := apiClient.GetMPVByPLID(cleanPLID)
 		if err != nil || len(results) == 0 {
-			e.Log(fmt.Sprintf("⚠️ 未找到 PLID %s 对应商品或无返回", cleanPLID), "WARN")
+			e.Log(fmt.Sprintf("⚠️ 未找到 PLID %s 对应商品或无返回", cleanPLID), "WARN", w.storeID, store.Name)
 			time.Sleep(1500 * time.Millisecond)
 			continue
 		}
@@ -558,12 +769,12 @@ func (e *Engine) executeFollowBatch(items []FollowItem) {
 				}
 				rrp := int(float64(offerPrice) * 1.2)
 
-				if err := e.api.CreateOffer(gtin, offerPrice, rrp, -1); err == nil {
+				if err := apiClient.CreateOffer(gtin, offerPrice, rrp, -1); err == nil {
 					followedInPLID++
 					successCount++
-					e.mu.Lock()
-					e.totalFollowed++
-					e.mu.Unlock()
+					w.mu.Lock()
+					w.totalFollowed++
+					w.mu.Unlock()
 
 					key := fmt.Sprintf("%s/%s", tsinID, productlineID)
 					newTargets[key] = config.Target{
@@ -572,34 +783,31 @@ func (e *Engine) executeFollowBatch(items []FollowItem) {
 						MaxPrice: 0,
 					}
 					if e.db != nil {
-						_ = e.db.RecordFollow(item.URL, tsinID, productlineID, gtin, item.Stock, minPrice, "SUCCESS", fmt.Sprintf("售价: R%d, RRP: R%d", offerPrice, rrp))
+						_ = e.db.RecordStoreFollow(w.storeID, item.URL, tsinID, productlineID, gtin, item.Stock, minPrice, "SUCCESS", fmt.Sprintf("售价: R%d, RRP: R%d", offerPrice, rrp))
 					}
-					e.Log(fmt.Sprintf("🎉 成功跟卖 GTIN:%s (TSIN:%s) | 售价: R%d, RRP: R%d", gtin, tsinID, offerPrice, rrp), "SUCCESS")
+					e.Log(fmt.Sprintf("🎉 成功跟卖 GTIN:%s (TSIN:%s) | 售价: R%d, RRP: R%d", gtin, tsinID, offerPrice, rrp), "SUCCESS", w.storeID, store.Name)
 				} else {
 					if e.db != nil {
-						_ = e.db.RecordFollow(item.URL, tsinID, productlineID, gtin, item.Stock, minPrice, "FAILED", err.Error())
+						_ = e.db.RecordStoreFollow(w.storeID, item.URL, tsinID, productlineID, gtin, item.Stock, minPrice, "FAILED", err.Error())
 					}
-					e.Log(fmt.Sprintf("❌ 跟卖失败 GTIN:%s: %v", gtin, err), "ERROR")
+					e.Log(fmt.Sprintf("❌ 跟卖失败 GTIN:%s: %v", gtin, err), "ERROR", w.storeID, store.Name)
 				}
 				time.Sleep(1500 * time.Millisecond)
 			}
 		}
 
 		if followedInPLID == 0 {
-			e.Log(fmt.Sprintf("ℹ️ PLID %s 全部变体均已有 Offer 或不可跟卖", cleanPLID), "DEBUG")
+			e.Log(fmt.Sprintf("ℹ️ PLID %s 全部变体均已有 Offer 或不可跟卖", cleanPLID), "DEBUG", w.storeID, store.Name)
 		}
 		time.Sleep(2 * time.Second)
 	}
 
-	if len(newTargets) > 0 {
-		_ = e.cfgMgr.UpdateTargets(newTargets)
-		if e.db != nil {
-			_ = e.db.SaveTargets(newTargets)
-		}
-		e.Log(fmt.Sprintf("💾 已将新跟卖的 %d 个商品自动加入监控列表并存入数据库", len(newTargets)), "SUCCESS")
+	if len(newTargets) > 0 && e.db != nil {
+		_ = e.db.SaveStoreTargets(w.storeID, newTargets)
+		e.Log(fmt.Sprintf("💾 已将新跟卖的 %d 个商品自动加入店铺 [%s] 监控列表并存入数据库", len(newTargets), store.Name), "SUCCESS", w.storeID, store.Name)
 	}
 
-	e.Log(fmt.Sprintf("🏁 批量跟卖完成！成功上架 Offer: %d 个", successCount), "SUCCESS")
+	e.Log(fmt.Sprintf("🏁 店铺 [%s] 批量跟卖完成！成功上架 Offer: %d 个", store.Name, successCount), "SUCCESS", w.storeID, store.Name)
 }
 
 func truncate(str string, maxLen int) string {

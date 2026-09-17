@@ -14,9 +14,10 @@ const (
 )
 
 type Target struct {
-	Selected bool `json:"selected"`
-	MinPrice int  `json:"min_price"`
-	MaxPrice int  `json:"max_price"`
+	Selected bool   `json:"selected"`
+	MinPrice int    `json:"min_price"`
+	MaxPrice int    `json:"max_price"`
+	StoreID  string `json:"store_id,omitempty"`
 }
 
 type Config struct {

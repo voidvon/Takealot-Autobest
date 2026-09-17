@@ -168,6 +168,7 @@ export const RepricerTab: React.FC = () => {
           selected: o.selected,
           min_price: o.min_price || 0,
           max_price: o.max_price || 0,
+          store_id: o.store_id,
         }
       })
       const res = await api.saveTargets(targetsMap)
@@ -191,9 +192,9 @@ export const RepricerTab: React.FC = () => {
       const payload: any = { selling_price: editOffer.newPrice }
       if (editOffer.newRrp) payload.rrp = editOffer.newRrp
 
-      // Call API
+      // Call API with specific store_id
       const offerId = editOffer.offer.key.split('/')[0] // or use official offer update
-      await api.updateOfficialOffer(offerId, payload)
+      await api.updateOfficialOffer(offerId, payload, editOffer.offer.store_id)
       alert('商品售价更新成功！')
       setEditOffer({ open: false })
       loadOffers()
@@ -555,9 +556,16 @@ export const RepricerTab: React.FC = () => {
                       {/* Title & TSIN / PLID */}
                       <TableCell>
                         <div className="space-y-1">
-                          <p className="font-medium text-foreground line-clamp-2 text-xs leading-snug" title={item.title}>
-                            {item.title || '未知商品标题'}
-                          </p>
+                          <div className="flex items-start gap-1.5">
+                            {item.store_name && (
+                              <Badge variant="outline" className="text-[10px] h-4.5 px-1.5 shrink-0 bg-primary/5 text-primary border-primary/20 font-medium">
+                                {item.store_name}
+                              </Badge>
+                            )}
+                            <p className="font-medium text-foreground line-clamp-2 text-xs leading-snug" title={item.title}>
+                              {item.title || '未知商品标题'}
+                            </p>
+                          </div>
                           <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground font-mono">
                             {item.sku && (
                               <span>SKU: <strong className="text-foreground">{item.sku}</strong></span>

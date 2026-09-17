@@ -59,27 +59,47 @@ func main() {
 	cfgMgr := config.NewManager(".")
 	cfg := cfgMgr.Get()
 
-	// 3. 监控商品双向同步保证 SQLite 持久化
+	// 3. 确保店铺初始化与 ClientPool 就绪
+	clientPool := api.NewClientPool()
 	if database != nil {
-		dbTargets, err := database.LoadTargets()
+		defStore, err := database.EnsureDefaultStore(
+			cfg.Authorization,
+			cfg.PriceDecreaseStep,
+			cfg.PriceIncreaseStep,
+			cfg.IntervalMinutes,
+			cfg.BulkStock,
+			cfg.MaxFetchOffers,
+			cfg.RRPPercentage,
+		)
+		if err == nil && defStore != nil {
+			clientPool.GetOrCreate(defStore.ID, defStore.Authorization, defStore.ProxyURL)
+		}
+
+		// 加载全部店铺到 ClientPool
+		if stores, err := database.GetStores(); err == nil {
+			for _, st := range stores {
+				clientPool.GetOrCreate(st.ID, st.Authorization, st.ProxyURL)
+			}
+			log.Printf("🏪 已成功就绪 %d 个店铺实例", len(stores))
+		}
+
+		// 监控商品双向同步保证 SQLite 持久化
+		dbTargets, err := database.LoadStoreTargets("default")
 		if err == nil && len(dbTargets) > 0 {
 			_ = cfgMgr.UpdateTargets(dbTargets)
 		} else if len(cfg.Targets) > 0 {
-			if err := database.SaveTargets(cfg.Targets); err == nil {
+			if err := database.SaveStoreTargets("default", cfg.Targets); err == nil {
 				log.Printf("📦 已将现有配置中的 %d 条商品监控数据导入 SQLite", len(cfg.Targets))
 			}
 		}
 	}
 
-	// 4. Initialize Takealot API Client
-	apiClient := api.NewClient(cfg.Authorization)
+	// 4. Initialize Automation Engine
+	eng := engine.NewEngine(cfgMgr, clientPool, database)
 
-	// 5. Initialize Automation Engine
-	eng := engine.NewEngine(cfgMgr, apiClient, database)
-
-	// 6. Initialize HTTP Server
+	// 5. Initialize HTTP Server
 	distSubFS, _ := fs.Sub(distEmbedFS, "web/dist")
-	srv := server.NewServer(cfgMgr, apiClient, eng, database, distSubFS, staticHTML, Version)
+	srv := server.NewServer(cfgMgr, clientPool, eng, database, distSubFS, staticHTML, Version)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 	url := fmt.Sprintf("http://%s", addr)

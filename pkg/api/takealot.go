@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -23,6 +24,7 @@ const (
 type Client struct {
 	mu            sync.RWMutex
 	authorization string
+	proxyURL      string
 	httpClient    *http.Client
 
 	rateMu      sync.Mutex
@@ -41,18 +43,33 @@ func FormatAuth(auth string) string {
 	return auth
 }
 
-func NewClient(authorization string) *Client {
+func makeHTTPClient(proxyStr string) *http.Client {
+	transport := &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 20,
+		IdleConnTimeout:     90 * time.Second,
+	}
+	if proxyStr != "" {
+		if u, err := url.Parse(proxyStr); err == nil {
+			transport.Proxy = http.ProxyURL(u)
+		}
+	}
+	return &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: transport,
+	}
+}
+
+func NewClient(authorization string, proxyURL ...string) *Client {
+	proxy := ""
+	if len(proxyURL) > 0 && strings.TrimSpace(proxyURL[0]) != "" {
+		proxy = strings.TrimSpace(proxyURL[0])
+	}
 	return &Client{
 		authorization: FormatAuth(authorization),
-		httpClient: &http.Client{
-			Timeout: 15 * time.Second,
-			Transport: &http.Transport{
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 20,
-				IdleConnTimeout:     90 * time.Second,
-			},
-		},
-		minInterval: 350 * time.Millisecond, // 默认全局请求间隔不少于 350ms，限制每秒发包量在安全区间
+		proxyURL:      proxy,
+		httpClient:    makeHTTPClient(proxy),
+		minInterval:   350 * time.Millisecond, // 默认全局请求间隔不少于 350ms，限制每秒发包量在安全区间
 	}
 }
 
@@ -62,10 +79,71 @@ func (c *Client) SetAuthorization(auth string) {
 	c.authorization = FormatAuth(auth)
 }
 
+func (c *Client) SetProxy(proxyURL string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	proxyURL = strings.TrimSpace(proxyURL)
+	if c.proxyURL != proxyURL {
+		c.proxyURL = proxyURL
+		c.httpClient = makeHTTPClient(proxyURL)
+	}
+}
+
+func (c *Client) GetProxy() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.proxyURL
+}
+
 func (c *Client) getAuth() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.authorization
+}
+
+// ClientPool 提供按店铺 store_id 缓存与复用 Client 的管理器
+type ClientPool struct {
+	mu      sync.RWMutex
+	clients map[string]*Client
+}
+
+func NewClientPool() *ClientPool {
+	return &ClientPool{
+		clients: make(map[string]*Client),
+	}
+}
+
+func (p *ClientPool) Get(storeID string) *Client {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.clients[storeID]
+}
+
+func (p *ClientPool) Set(storeID string, client *Client) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.clients[storeID] = client
+}
+
+func (p *ClientPool) Remove(storeID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.clients, storeID)
+}
+
+func (p *ClientPool) GetOrCreate(storeID, auth, proxyURL string) *Client {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if c, ok := p.clients[storeID]; ok {
+		if auth != "" {
+			c.SetAuthorization(auth)
+		}
+		c.SetProxy(proxyURL)
+		return c
+	}
+	c := NewClient(auth, proxyURL)
+	p.clients[storeID] = c
+	return c
 }
 
 func (c *Client) setHeaders(req *http.Request) {

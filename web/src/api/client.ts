@@ -1,5 +1,6 @@
 import type {
   SystemConfig,
+  Store,
   OfferViewModel,
   EngineStatus,
   LogEntry,
@@ -14,10 +15,31 @@ import type {
   TargetConfig,
 } from '../types'
 
+let currentStoreId = localStorage.getItem('takealot_active_store_id') || ''
+
+export function getActiveStoreId(): string {
+  return currentStoreId
+}
+
+export function setActiveStoreId(id: string) {
+  currentStoreId = id
+  if (id) {
+    localStorage.setItem('takealot_active_store_id', id)
+  } else {
+    localStorage.removeItem('takealot_active_store_id')
+  }
+}
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
+  const customHeaders: Record<string, string> = {}
+  if (currentStoreId) {
+    customHeaders['X-Store-Id'] = currentStoreId
+  }
+
   const res = await fetch(url, {
     headers: {
       'Content-Type': 'application/json',
+      ...customHeaders,
       ...(options?.headers || {}),
     },
     ...options,
@@ -37,6 +59,31 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  // Store Management
+  getStores: () => request<{ success: boolean; stores: Store[]; active_store_id: string }>('/api/stores'),
+  createStore: (store: Partial<Store>) =>
+    request<{ success: boolean; store: Store; message?: string }>('/api/stores', {
+      method: 'POST',
+      body: JSON.stringify(store),
+    }),
+  updateStore: (store: Partial<Store>) =>
+    request<{ success: boolean; store: Store; message?: string }>('/api/stores', {
+      method: 'PUT',
+      body: JSON.stringify(store),
+    }),
+  deleteStore: (id: string) =>
+    request<{ success: boolean; message?: string }>(`/api/stores?id=${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  testStore: (authorization: string, proxyUrl?: string) =>
+    request<{ success: boolean; message: string; display_name?: string; total_offers?: number }>('/api/stores/test', {
+      method: 'POST',
+      body: JSON.stringify({ authorization, proxy_url: proxyUrl }),
+    }),
+  syncStoreName: () => request<{ success: boolean; name: string }>('/api/stores/sync', { method: 'POST' }),
+  startAllReprice: () => request<{ success: boolean; results: string[] }>('/api/reprice/start_all', { method: 'POST' }),
+  stopAllReprice: () => request<{ success: boolean; results: string[] }>('/api/reprice/stop_all', { method: 'POST' }),
+
   // System & Config
   getVersion: () => request<{ version: string }>('/api/version'),
   getConfig: () => request<SystemConfig>('/api/config'),
@@ -58,7 +105,7 @@ export const api = {
   saveTargets: (targets: Record<string, TargetConfig>) =>
     request<{ success: boolean; message: string }>('/api/targets', {
       method: 'POST',
-      body: JSON.stringify({ targets }),
+      body: JSON.stringify(targets),
     }),
   startReprice: () => request<{ success: boolean; message: string }>('/api/reprice/start', { method: 'POST' }),
   pauseReprice: () => request<{ success: boolean; message: string }>('/api/reprice/pause', { method: 'POST' }),
@@ -69,8 +116,13 @@ export const api = {
   uploadFollowExcel: async (file: File) => {
     const formData = new FormData()
     formData.append('file', file)
+    const customHeaders: Record<string, string> = {}
+    if (currentStoreId) {
+      customHeaders['X-Store-Id'] = currentStoreId
+    }
     const res = await fetch('/api/follow/upload', {
       method: 'POST',
+      headers: customHeaders,
       body: formData,
     })
     if (!res.ok) {
@@ -94,16 +146,28 @@ export const api = {
       `/api/official/offers?page=${page}&page_size=${pageSize}${filter ? `&filter=${encodeURIComponent(filter)}` : ''}`
     ),
   getOfficialOffersCount: () => request<{ count: number }>('/api/official/offers/count'),
-  updateOfficialOffer: (offerId: string | number, payload: {
-    selling_price?: number
-    rrp?: number
-    leadtime_days?: number
-    status?: string
-  }) =>
-    request<{ success: boolean; message: string }>('/api/official/offers/update', {
+  updateOfficialOffer: (
+    offerId: string | number,
+    payload: {
+      selling_price?: number
+      rrp?: number
+      leadtime_days?: number
+      status?: string
+      store_id?: string
+    },
+    storeId?: string
+  ) => {
+    const customHeaders: Record<string, string> = {}
+    const targetStoreId = storeId || payload.store_id
+    if (targetStoreId) {
+      customHeaders['X-Store-Id'] = targetStoreId
+    }
+    return request<{ success: boolean; message: string }>('/api/official/offers/update', {
       method: 'POST',
-      body: JSON.stringify({ offer_id: String(offerId), ...payload }),
-    }),
+      headers: customHeaders,
+      body: JSON.stringify({ offer_id: String(offerId), store_id: targetStoreId, ...payload }),
+    })
+  },
   getOfficialSales: (page = 1, pageSize = 50, startDate = '', endDate = '') =>
     request<SalesResponse>(
       `/api/official/sales?page=${page}&page_size=${pageSize}${startDate ? `&start_date=${startDate}` : ''}${endDate ? `&end_date=${endDate}` : ''}`
