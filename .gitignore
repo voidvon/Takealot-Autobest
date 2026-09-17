@@ -1,5 +1,6 @@
 # Binaries and executables
 takealot
+keygen
 Takealot-mac
 *.exe
 *.dll
@@ -29,3 +30,8 @@ Thumbs.db
 # Sensitive local config with Seller API Token
 config.json
 *.db
+*.db*
+*.key
+private.key
+.license
+

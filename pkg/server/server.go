@@ -16,6 +16,7 @@ import (
 	"takealot/pkg/config"
 	"takealot/pkg/db"
 	"takealot/pkg/engine"
+	"takealot/pkg/license"
 )
 
 type Server struct {
@@ -23,18 +24,20 @@ type Server struct {
 	clientPool *api.ClientPool
 	eng        *engine.Engine
 	db         *db.DB
+	licMgr     *license.Manager
 	mux        *http.ServeMux
 	distFS     fs.FS
 	staticHTML []byte
 	version    string
 }
 
-func NewServer(cfgMgr *config.Manager, clientPool *api.ClientPool, eng *engine.Engine, database *db.DB, distFS fs.FS, staticHTML []byte, version string) *Server {
+func NewServer(cfgMgr *config.Manager, clientPool *api.ClientPool, eng *engine.Engine, database *db.DB, licMgr *license.Manager, distFS fs.FS, staticHTML []byte, version string) *Server {
 	s := &Server{
 		cfgMgr:     cfgMgr,
 		clientPool: clientPool,
 		eng:        eng,
 		db:         database,
+		licMgr:     licMgr,
 		mux:        http.NewServeMux(),
 		distFS:     distFS,
 		staticHTML: staticHTML,
@@ -82,12 +85,39 @@ func (s *Server) getStoreContext(r *http.Request) (*db.Store, *api.Client, error
 }
 
 func (s *Server) Handler() http.Handler {
-	return s.mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+
+		// Always allow static files, SPA routing, version, and license endpoints
+		if !strings.HasPrefix(path, "/api/") ||
+			strings.HasPrefix(path, "/api/license/") ||
+			path == "/api/version" {
+			s.mux.ServeHTTP(w, r)
+			return
+		}
+
+		// Intercept business API calls when software is unactivated or expired
+		if s.licMgr != nil && !s.licMgr.IsValid() {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusPaymentRequired) // 402
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": false,
+				"error":   "软件未激活或授权已过期，请先输入激活码",
+				"code":    "LICENSE_REQUIRED",
+				"license": s.licMgr.GetStatus(),
+			})
+			return
+		}
+
+		s.mux.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("/", s.handleIndex)
 	s.mux.HandleFunc("/api/version", s.handleVersion)
+	s.mux.HandleFunc("/api/license/status", s.handleLicenseStatus)
+	s.mux.HandleFunc("/api/license/activate", s.handleLicenseActivate)
 	s.mux.HandleFunc("/api/config", s.handleConfig)
 	s.mux.HandleFunc("/api/test_auth", s.handleTestAuth)
 	s.mux.HandleFunc("/api/offers", s.handleOffers)
@@ -179,6 +209,58 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]any{
 		"version": s.version,
+	})
+}
+
+func (s *Server) handleLicenseStatus(w http.ResponseWriter, r *http.Request) {
+	if s.licMgr == nil {
+		jsonResponse(w, http.StatusOK, map[string]any{
+			"activated":  true,
+			"machine_id": "UNKNOWN",
+			"message":    "未启用授权模块",
+		})
+		return
+	}
+	jsonResponse(w, http.StatusOK, s.licMgr.GetStatus())
+}
+
+func (s *Server) handleLicenseActivate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	if s.licMgr == nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "未启用授权模块"})
+		return
+	}
+
+	var req struct {
+		LicenseKey string `json:"license_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "请求参数解析失败"})
+		return
+	}
+
+	req.LicenseKey = strings.TrimSpace(req.LicenseKey)
+	if req.LicenseKey == "" {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "激活码不能为空"})
+		return
+	}
+
+	if err := s.licMgr.Activate(req.LicenseKey); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": "恭喜，软件激活成功！",
+		"license": s.licMgr.GetStatus(),
 	})
 }
 

@@ -13,6 +13,7 @@ import type {
   StockHealthStats,
   FollowItem,
   TargetConfig,
+  LicenseStatus,
 } from '../types'
 
 let currentStoreId = localStorage.getItem('takealot_active_store_id') || ''
@@ -294,5 +295,12 @@ export const api = {
   deleteBooking: (id: number) =>
     request<{ success: boolean }>(`/api/fulfillment/bookings/delete?id=${id}`, {
       method: 'POST',
+    }),
+  // License Management
+  getLicenseStatus: () => request<LicenseStatus>('/api/license/status'),
+  activateLicense: (licenseKey: string) =>
+    request<{ success: boolean; message: string; license: LicenseStatus; error?: string }>('/api/license/activate', {
+      method: 'POST',
+      body: JSON.stringify({ license_key: licenseKey }),
     }),
 }

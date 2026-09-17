@@ -8,6 +8,7 @@ import { Badge } from '../ui/badge'
 import { Dialog } from '../ui/dialog'
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from '../ui/table'
 import { ImagePreviewModal } from '../ui/ImagePreviewModal'
+import { toast } from '../ui/use-toast'
 import { formatCurrency, cn } from '../../lib/utils'
 import {
   Search,
@@ -81,7 +82,7 @@ export const RepricerTab: React.FC = () => {
         setHasChanges(false)
       }
     } catch (err: any) {
-      alert(`获取调价商品列表失败: ${err.message}`)
+      toast.error('获取调价商品列表失败', err.message)
     } finally {
       setLoading(false)
       setSyncing(false)
@@ -174,10 +175,10 @@ export const RepricerTab: React.FC = () => {
       const res = await api.saveTargets(targetsMap)
       if (res.success) {
         setHasChanges(false)
-        alert('🎉 监控配置已成功保存并立即生效！')
+        toast.success('监控配置已保存', '监控配置已成功保存并立即生效！')
       }
     } catch (err: any) {
-      alert(`保存失败: ${err.message}`)
+      toast.error('保存失败', err.message)
     } finally {
       setSavingTargets(false)
     }
@@ -195,11 +196,11 @@ export const RepricerTab: React.FC = () => {
       // Call API with specific store_id
       const offerId = editOffer.offer.key.split('/')[0] // or use official offer update
       await api.updateOfficialOffer(offerId, payload, editOffer.offer.store_id)
-      alert('商品售价更新成功！')
+      toast.success('商品售价更新成功！')
       setEditOffer({ open: false })
       loadOffers()
     } catch (err: any) {
-      alert(`修改价格失败: ${err.message}`)
+      toast.error('修改价格失败', err.message)
     } finally {
       setEditOffer((prev) => ({ ...prev, saving: false }))
     }
@@ -232,7 +233,7 @@ export const RepricerTab: React.FC = () => {
 
   const handleApplyBatchMinPrice = (mode: 'empty_only' | 'overwrite_all') => {
     if (batchRatio <= 0) {
-      alert('请输入大于 0 的有效折算倍数！')
+      toast.warning('请输入大于 0 的有效折算倍数！')
       return
     }
 
@@ -261,14 +262,14 @@ export const RepricerTab: React.FC = () => {
     })
 
     if (updatedCount === 0) {
-      alert(mode === 'empty_only' ? '所选范围内没有空白底价的商品，无需填充。' : '所选范围内没有可更新底价的有效商品。')
+      toast.info(mode === 'empty_only' ? '所选范围内没有空白底价的商品，无需填充。' : '所选范围内没有可更新底价的有效商品。')
       return
     }
 
     setOffers(updated)
     setHasChanges(true)
     setBatchMinPriceModalOpen(false)
-    alert(`🎉 已成功为 ${updatedCount} 款商品计算并更新最低保护底价！\n💡 提示：底价已在本地更新，请点击顶部的【保存已修改的配置】提交生效。`)
+    toast.success('保护底价计算并更新成功', `已为 ${updatedCount} 款商品计算并更新底价，请点击【保存已修改的配置】提交生效`)
   }
 
   return (

@@ -8,6 +8,7 @@ import { Input } from '../ui/input'
 import { Dialog } from '../ui/dialog'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../ui/tabs'
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from '../ui/table'
+import { toast } from '../ui/use-toast'
 import {
   UploadCloud,
   FileSpreadsheet,
@@ -91,7 +92,7 @@ export const FollowTab: React.FC<FollowTabProps> = ({ onNavigateLogs }) => {
 
   const handleFileUpload = async (file: File) => {
     if (!file.name.endsWith('.xlsx') && !file.name.endsWith('.xls')) {
-      alert('请上传 Excel 格式文件 (.xlsx)')
+      toast.warning('请上传 Excel 格式文件 (.xlsx)')
       return
     }
     setLoading(true)
@@ -100,11 +101,12 @@ export const FollowTab: React.FC<FollowTabProps> = ({ onNavigateLogs }) => {
       const res = await api.uploadFollowExcel(file)
       if (res.success) {
         setItems(res.items || [])
+        toast.success('表格解析成功！', `已读取 ${res.items?.length ?? 0} 条待跟卖记录`)
       } else {
-        alert('文件解析失败')
+        toast.error('文件解析失败')
       }
     } catch (err: any) {
-      alert(`上传解析失败: ${err.message}`)
+      toast.error('上传解析失败', err.message)
     } finally {
       setLoading(false)
     }
@@ -137,13 +139,13 @@ export const FollowTab: React.FC<FollowTabProps> = ({ onNavigateLogs }) => {
     try {
       const res = await api.startFollowBatch(items)
       if (res.success) {
-        alert('🚀 批量跟卖任务已在后台全力启动！将自动跳转至运行日志查看实时进度。')
+        toast.success('批量跟卖任务已在后台启动！', '将自动跳转至运行日志查看实时进度')
         onNavigateLogs()
       } else {
-        alert(`启动失败: ${res.message}`)
+        toast.error('启动失败', res.message)
       }
     } catch (err: any) {
-      alert(`提交任务失败: ${err.message}`)
+      toast.error('提交任务失败', err.message)
     } finally {
       setSubmitting(false)
     }
@@ -165,16 +167,16 @@ export const FollowTab: React.FC<FollowTabProps> = ({ onNavigateLogs }) => {
     try {
       const parsed = JSON.parse(createBatchModal.jsonContent)
       if (!Array.isArray(parsed)) {
-        alert('批处理数据格式必须为 JSON 数组 (Array)')
+        toast.warning('批处理数据格式必须为 JSON 数组 (Array)')
         return
       }
       setCreateBatchModal((prev) => ({ ...prev, submitting: true }))
       const res = await api.createOfficialBatch(parsed, 'bulk_api_submission')
-      alert(`批处理已提交至 Takealot 官方队列！Batch ID: ${res.batch_id}`)
+      toast.success('批处理已提交至官方队列！', `Batch ID: ${res.batch_id}`)
       setCreateBatchModal({ open: false, jsonContent: '' })
       loadBatchJobs()
     } catch (err: any) {
-      alert(`提交失败: ${err.message}`)
+      toast.error('批处理提交失败', err.message)
     } finally {
       setCreateBatchModal((prev) => ({ ...prev, submitting: false }))
     }

@@ -51,10 +51,15 @@ type StoreWorker struct {
 	storeName     string
 }
 
+type LicenseChecker interface {
+	IsValid() bool
+}
+
 type Engine struct {
 	cfgMgr     *config.Manager
 	clientPool *api.ClientPool
 	db         *db.DB
+	licChecker LicenseChecker
 
 	workerMu sync.RWMutex
 	workers  map[string]*StoreWorker
@@ -64,11 +69,12 @@ type Engine struct {
 	subscribers map[chan LogEntry]struct{}
 }
 
-func NewEngine(cfgMgr *config.Manager, clientPool *api.ClientPool, database *db.DB) *Engine {
+func NewEngine(cfgMgr *config.Manager, clientPool *api.ClientPool, database *db.DB, licChecker LicenseChecker) *Engine {
 	return &Engine{
 		cfgMgr:      cfgMgr,
 		clientPool:  clientPool,
 		db:          database,
+		licChecker:  licChecker,
 		workers:     make(map[string]*StoreWorker),
 		logs:        make([]LogEntry, 0, 500),
 		subscribers: make(map[chan LogEntry]struct{}),
@@ -153,6 +159,11 @@ func (e *Engine) GetRecentLogs() []LogEntry {
 }
 
 func (e *Engine) StartReprice(storeID string) (bool, string) {
+	if e.licChecker != nil && !e.licChecker.IsValid() {
+		e.Log("❌ 启动失败: 软件未激活或授权已过期，请前往控制面板激活", "ERROR", storeID, "")
+		return false, "软件未激活或授权已过期，请前往控制面板激活"
+	}
+
 	w := e.getOrCreateWorker(storeID)
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -212,6 +223,11 @@ func (e *Engine) StopReprice(storeID string) (bool, string) {
 }
 
 func (e *Engine) StartAll() []string {
+	if e.licChecker != nil && !e.licChecker.IsValid() {
+		e.Log("❌ 启动失败: 软件未激活或授权已过期，请前往控制面板激活", "ERROR", "", "")
+		return []string{"软件未激活或授权已过期，请前往控制面板激活"}
+	}
+
 	var results []string
 	if e.db == nil {
 		return results
@@ -411,6 +427,12 @@ func (e *Engine) repriceLoop(ctx context.Context, w *StoreWorker) {
 			if st, err := e.db.GetStore(w.storeID); err == nil && st != nil && st.IntervalMinutes > 0 {
 				interval = st.IntervalMinutes
 			}
+		}
+
+		if e.licChecker != nil && !e.licChecker.IsValid() {
+			e.Log(fmt.Sprintf("⚠️ 店铺 [%s] 检测到软件授权失效或已到期，已自动停止调价任务", w.storeName), "ERROR", w.storeID, w.storeName)
+			e.StopReprice(w.storeID)
+			return
 		}
 
 		w.mu.Lock()

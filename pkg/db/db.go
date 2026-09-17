@@ -1598,3 +1598,28 @@ func (d *DB) DeleteBooking(id int64) error {
 	_, err := d.conn.Exec(`DELETE FROM dc_bookings WHERE id = ?`, id)
 	return err
 }
+
+func (d *DB) GetSystemConfig(key string) (string, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var val string
+	err := d.conn.QueryRow(`SELECT value FROM system_config WHERE key = ?`, key).Scan(&val)
+	if err != nil {
+		return "", err
+	}
+	return val, nil
+}
+
+func (d *DB) SetSystemConfig(key, value string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	_, err := d.conn.Exec(
+		`INSERT INTO system_config (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
+		key, value,
+	)
+	return err
+}
+

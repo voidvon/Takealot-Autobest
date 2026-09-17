@@ -39,8 +39,8 @@ func TestMultiStoreServerAPI(t *testing.T) {
 	clientPool := api.NewClientPool()
 	clientPool.GetOrCreate(defStore.ID, defStore.Authorization, defStore.ProxyURL)
 
-	eng := engine.NewEngine(cfgMgr, clientPool, database)
-	srv := NewServer(cfgMgr, clientPool, eng, database, nil, nil, "0.2.0")
+	eng := engine.NewEngine(cfgMgr, clientPool, database, nil)
+	srv := NewServer(cfgMgr, clientPool, eng, database, nil, nil, nil, "0.2.0")
 
 	// 1. Test GET /api/stores
 	req := httptest.NewRequest(http.MethodGet, "/api/stores", nil)

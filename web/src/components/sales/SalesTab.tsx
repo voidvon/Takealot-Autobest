@@ -14,6 +14,7 @@ import { Button } from '../ui/button'
 import { Badge } from '../ui/badge'
 import { Dialog } from '../ui/dialog'
 import { Table, TableHeader, TableBody, TableHead, TableRow, TableCell } from '../ui/table'
+import { toast } from '../ui/use-toast'
 import { Tabs, TabsList, TabsTrigger } from '../ui/tabs'
 import { formatCurrency, formatDateTime } from '../../lib/utils'
 import { useTicker, formatDetailedCountdown } from '../../lib/countdown'
@@ -262,7 +263,7 @@ export const SalesTab: React.FC = () => {
       })
       loadShipments()
     } catch (e: any) {
-      alert(`更新数量失败: ${e.message}`)
+      toast.error('更新数量失败', e.message)
     }
   }
 
@@ -285,10 +286,11 @@ export const SalesTab: React.FC = () => {
         })
       }
       setWeighModal({ open: false, actualWeight: 0, volumetricWeight: 0 })
+      toast.success('重量保存成功！')
       loadShipments()
       loadLeadtimeOrders()
     } catch (e: any) {
-      alert(`保存重量失败: ${e.message}`)
+      toast.error('保存重量失败', e.message)
     }
   }
 
@@ -302,11 +304,11 @@ export const SalesTab: React.FC = () => {
         rrp: priceModal.rrp,
       })
       setPriceModal({ open: false, sellingPrice: 0, rrp: 0 })
-      alert('已成功同步新价格至 Takealot 官方！')
+      toast.success('已成功同步新价格至 Takealot 官方！')
       loadShipments()
       loadLeadtimeOrders()
     } catch (e: any) {
-      alert(`改价失败: ${e.message}`)
+      toast.error('改价失败', e.message)
     }
   }
 
@@ -315,11 +317,11 @@ export const SalesTab: React.FC = () => {
     if (!confirm('确认该发货单并生成送仓单据吗？')) return
     try {
       await api.updateShipmentStatus(shipmentId, 'confirmed')
-      alert('发货单已确认，已进入【已确认发货单】！')
+      toast.success('发货单已确认', '已进入【已确认发货单】！')
       loadShipments()
       setActiveTab('confirmed')
     } catch (e: any) {
-      alert(`确认失败: ${e.message}`)
+      toast.error('确认失败', e.message)
     }
   }
 
@@ -327,11 +329,11 @@ export const SalesTab: React.FC = () => {
   const handleMarkShipped = async (shipmentId: number) => {
     try {
       await api.updateShipmentStatus(shipmentId, 'shipped')
-      alert('已更新为在途发货单！')
+      toast.success('已更新为在途发货单！')
       loadShipments()
       setActiveTab('shipped')
     } catch (e: any) {
-      alert(`操作失败: ${e.message}`)
+      toast.error('操作失败', e.message)
     }
   }
 
@@ -348,11 +350,11 @@ export const SalesTab: React.FC = () => {
         notes: bookingModal.notes,
       })
       setBookingModal((prev) => ({ ...prev, open: false }))
-      alert('预约创建成功！')
+      toast.success('预约创建成功！')
       loadBookings()
       setActiveTab('bookings')
     } catch (e: any) {
-      alert(`创建预约失败: ${e.message}`)
+      toast.error('创建预约失败', e.message)
     }
   }
 
@@ -363,7 +365,7 @@ export const SalesTab: React.FC = () => {
       const res = await api.getOfficialCustomerInvoices(orderId)
       setInvoiceModal({ open: true, orderId, invoices: res.documents || [], loading: false })
     } catch (err: any) {
-      alert(`获取发票失败: ${err.message}`)
+      toast.error('获取发票失败', err.message)
       setInvoiceModal({ open: false, invoices: [] })
     }
   }

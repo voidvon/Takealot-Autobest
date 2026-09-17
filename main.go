@@ -18,6 +18,7 @@ import (
 	"takealot/pkg/config"
 	"takealot/pkg/db"
 	"takealot/pkg/engine"
+	"takealot/pkg/license"
 	"takealot/pkg/server"
 )
 
@@ -94,12 +95,22 @@ func main() {
 		}
 	}
 
-	// 4. Initialize Automation Engine
-	eng := engine.NewEngine(cfgMgr, clientPool, database)
+	// 4. Initialize License Manager
+	licMgr := license.NewManager(database)
+	licStatus := licMgr.GetStatus()
+	if licStatus.Activated {
+		log.Printf("🔑 软件授权状态: 已激活 [客户: %s | 有效期: %s]", licStatus.Customer, licStatus.ExpiresAtFormatted)
+	} else {
+		log.Printf("⚠️ 软件授权状态: 未激活 (本机机器识别码: %s)", licStatus.MachineID)
+		log.Printf("💡 请在 Web 控制台输入激活码，或联系管理员获取离线授权")
+	}
 
-	// 5. Initialize HTTP Server
+	// 5. Initialize Automation Engine
+	eng := engine.NewEngine(cfgMgr, clientPool, database, licMgr)
+
+	// 6. Initialize HTTP Server
 	distSubFS, _ := fs.Sub(distEmbedFS, "web/dist")
-	srv := server.NewServer(cfgMgr, clientPool, eng, database, distSubFS, staticHTML, Version)
+	srv := server.NewServer(cfgMgr, clientPool, eng, database, licMgr, distSubFS, staticHTML, Version)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 	url := fmt.Sprintf("http://%s", addr)

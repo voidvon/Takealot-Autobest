@@ -4,6 +4,7 @@ import type { Store } from '../../types'
 import { Dialog, DialogFooter } from '../ui/dialog'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
+import { toast } from '../ui/use-toast'
 import { ExternalLink, CheckCircle2, AlertCircle } from 'lucide-react'
 
 interface AddStoreModalProps {
@@ -61,7 +62,7 @@ export const AddStoreModal: React.FC<AddStoreModalProps> = ({
 
   const handleTestToken = async () => {
     if (!storeForm.authorization) {
-      alert('请先输入 Authorization 凭据')
+      toast.warning('请先输入 Authorization 凭据')
       return
     }
     setTestingToken(true)
@@ -85,18 +86,19 @@ export const AddStoreModal: React.FC<AddStoreModalProps> = ({
   const handleSaveNewStore = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!storeForm.authorization) {
-      alert('店铺 Authorization 为必填项')
+      toast.warning('店铺 Authorization 为必填项')
       return
     }
     setSavingStore(true)
     try {
       const res = await api.createStore(storeForm)
       if (res.success) {
+        toast.success('店铺添加成功！', `已成功接入店铺: ${res.store.name}`)
         onOpenChange(false)
         onSuccess(res.store)
       }
     } catch (err: any) {
-      alert(`添加店铺失败: ${err.message}`)
+      toast.error('添加店铺失败', err.message)
     } finally {
       setSavingStore(false)
     }

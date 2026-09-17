@@ -1,14 +1,15 @@
-import React from 'react'
-import type { EngineStatus, Store } from '../../types'
+import type { EngineStatus, Store, LicenseStatus } from '../../types'
 import { StoreSwitcher } from './StoreSwitcher'
 import { Button } from '../ui/button'
 import { Badge } from '../ui/badge'
-import { Play, Pause, Square, Moon, Sun } from 'lucide-react'
+import { Play, Pause, Square, Moon, Sun, KeyRound } from 'lucide-react'
 import { formatMinutesSeconds } from '../../lib/countdown'
 
 interface HeaderProps {
   version: string
   status: EngineStatus
+  licenseStatus?: LicenseStatus | null
+  onOpenLicense?: () => void
   onStartReprice: () => void
   onPauseReprice: () => void
   onStopReprice: () => void
@@ -26,6 +27,8 @@ interface HeaderProps {
 export const Header: React.FC<HeaderProps> = ({
   version,
   status,
+  licenseStatus,
+  onOpenLicense,
   onStartReprice,
   onPauseReprice,
   onStopReprice,
@@ -55,6 +58,28 @@ export const Header: React.FC<HeaderProps> = ({
             <Badge variant="secondary" className="hidden lg:inline-flex text-[10px] font-mono px-1.5 h-4.5">
               v{version}
             </Badge>
+
+            {/* License Status Badge Button */}
+            {licenseStatus && onOpenLicense && (
+              <button
+                type="button"
+                onClick={onOpenLicense}
+                className="inline-flex items-center transition-transform active:scale-95 focus:outline-hidden"
+                title="点击查看授权详情或激活"
+              >
+                {licenseStatus.activated && !licenseStatus.expired ? (
+                  <Badge variant="success" className="text-[10px] px-1.5 h-4.5 cursor-pointer gap-1 font-medium">
+                    <KeyRound className="w-2.5 h-2.5" />
+                    <span>{licenseStatus.expires_at === 0 ? '永久买断' : `已激活 (${licenseStatus.days_left ?? 0}天)`}</span>
+                  </Badge>
+                ) : (
+                  <Badge variant="destructive" className="text-[10px] px-1.5 h-4.5 cursor-pointer gap-1 font-medium animate-pulse">
+                    <KeyRound className="w-2.5 h-2.5" />
+                    <span>未激活</span>
+                  </Badge>
+                )}
+              </button>
+            )}
           </div>
 
           {/* Multi-Store Switcher */}

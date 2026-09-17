@@ -334,3 +334,16 @@ export interface BookingRecord {
   created_at: string
 }
 
+export interface LicenseStatus {
+  activated: boolean
+  machine_id: string
+  customer?: string
+  expires_at?: number
+  expires_at_formatted?: string
+  expired?: boolean
+  days_left?: number
+  max_stores?: number
+  message?: string
+}
+
+

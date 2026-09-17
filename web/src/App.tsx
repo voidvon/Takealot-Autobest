@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { api, getActiveStoreId, setActiveStoreId } from './api/client'
-import type { EngineStatus, Store } from './types'
+import type { EngineStatus, Store, LicenseStatus } from './types'
 import { Header } from './components/layout/Header'
 import { Sidebar, type TabId } from './components/layout/Sidebar'
 import { DashboardTab } from './components/dashboard/DashboardTab'
@@ -10,6 +10,9 @@ import { SalesTab } from './components/sales/SalesTab'
 import { FollowTab } from './components/follow/FollowTab'
 import { SettingsTab } from './components/settings/SettingsTab'
 import { AddStoreModal } from './components/layout/AddStoreModal'
+import { LicenseModal } from './components/license/LicenseModal'
+import { Toaster } from './components/ui/toaster'
+import { toast } from './components/ui/use-toast'
 
 const VALID_TABS: TabId[] = ['dashboard', 'repricer', 'catalog', 'sales', 'follow', 'settings']
 
@@ -34,6 +37,10 @@ export const App: React.FC = () => {
   const [stores, setStores] = useState<Store[]>([])
   const [currentStoreId, setCurrentStoreId] = useState<string>(() => getActiveStoreId())
   const [isAddStoreOpen, setIsAddStoreOpen] = useState(false)
+
+  // License State
+  const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null)
+  const [isLicenseModalOpen, setIsLicenseModalOpen] = useState(false)
 
   const handleSelectTab = (tab: TabId) => {
     setActiveTabState(tab)
@@ -109,8 +116,23 @@ export const App: React.FC = () => {
     }
   }
 
-  // Fetch version & initial status & stores
+  // Load license status
+  const loadLicenseStatus = async () => {
+    try {
+      const res = await api.getLicenseStatus()
+      setLicenseStatus(res)
+      if (!res.activated || res.expired) {
+        setIsLicenseModalOpen(true)
+      }
+    } catch (err) {
+      console.error('Failed to load license status:', err)
+    }
+  }
+
+  // Fetch version & initial status & stores & license
   useEffect(() => {
+    loadLicenseStatus()
+
     api.getVersion().then((res) => {
       if (res.version) setVersion(res.version)
     }).catch(() => {})
@@ -182,6 +204,11 @@ export const App: React.FC = () => {
 
   // Engine controls for active store
   const handleStartReprice = async () => {
+    if (!licenseStatus?.activated || licenseStatus?.expired) {
+      setIsLicenseModalOpen(true)
+      return
+    }
+
     setLoadingAction(true)
     try {
       const res = await api.startReprice()
@@ -192,10 +219,10 @@ export const App: React.FC = () => {
         }).catch(() => {})
         await loadStores()
       } else {
-        alert(res.message || '启动失败')
+        toast.error('启动调价失败', res.message || '未知错误')
       }
     } catch (e: any) {
-      alert(`启动失败: ${e.message}`)
+      toast.error('启动调价失败', e.message)
     } finally {
       setLoadingAction(false)
     }
@@ -213,7 +240,7 @@ export const App: React.FC = () => {
         await loadStores()
       }
     } catch (e: any) {
-      alert(`暂停操作失败: ${e.message}`)
+      toast.error('暂停操作失败', e.message)
     } finally {
       setLoadingAction(false)
     }
@@ -228,7 +255,7 @@ export const App: React.FC = () => {
         await loadStores()
       }
     } catch (e: any) {
-      alert(`停止操作失败: ${e.message}`)
+      toast.error('停止操作失败', e.message)
     } finally {
       setLoadingAction(false)
     }
@@ -236,10 +263,15 @@ export const App: React.FC = () => {
 
   return (
     <div className="min-h-screen flex flex-col bg-background text-foreground">
-      {/* Top Header with Store Switcher */}
+      {/* Global Toast Notification Viewport (Top Center) */}
+      <Toaster />
+
+      {/* Top Header with Store Switcher & License Status */}
       <Header
         version={version}
         status={status}
+        licenseStatus={licenseStatus}
+        onOpenLicense={() => setIsLicenseModalOpen(true)}
         onStartReprice={handleStartReprice}
         onPauseReprice={handlePauseReprice}
         onStopReprice={handleStopReprice}
@@ -251,21 +283,25 @@ export const App: React.FC = () => {
         onSelectStore={handleSelectStore}
         onOpenAddStore={() => setIsAddStoreOpen(true)}
         onStartAllReprice={async () => {
+          if (!licenseStatus?.activated || licenseStatus?.expired) {
+            setIsLicenseModalOpen(true)
+            return
+          }
           try {
             const res = await api.startAllReprice()
             await loadStores()
-            alert(`已执行一键启动所有店铺巡检！\n\n${res.results.join('\n')}`)
+            toast.success('已执行一键启动所有店铺巡检', res.results.join('\n'))
           } catch (e: any) {
-            alert(`操作失败: ${e.message}`)
+            toast.error('一键启动失败', e.message)
           }
         }}
         onStopAllReprice={async () => {
           try {
             const res = await api.stopAllReprice()
             await loadStores()
-            alert(`已执行一键停止所有店铺巡检！\n\n${res.results.join('\n')}`)
+            toast.warning('已执行一键停止所有店铺巡检', res.results.join('\n'))
           } catch (e: any) {
-            alert(`操作失败: ${e.message}`)
+            toast.error('一键停止失败', e.message)
           }
         }}
       />
@@ -306,6 +342,19 @@ export const App: React.FC = () => {
           )}
         </main>
       </div>
+
+      {/* Global License Modal */}
+      <LicenseModal
+        open={isLicenseModalOpen}
+        onOpenChange={setIsLicenseModalOpen}
+        status={licenseStatus}
+        onActivated={(newStatus) => {
+          setLicenseStatus(newStatus)
+          if (newStatus.activated && !newStatus.expired) {
+            loadStores()
+          }
+        }}
+      />
 
       {/* Global Add Store Modal (accessible from any tab / StoreSwitcher) */}
       <AddStoreModal

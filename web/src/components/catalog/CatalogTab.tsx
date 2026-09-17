@@ -6,6 +6,7 @@ import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import { Badge } from '../ui/badge'
 import { Dialog } from '../ui/dialog'
+import { toast } from '../ui/use-toast'
 import {
   Table,
   TableHeader,
@@ -110,7 +111,7 @@ export const CatalogTab: React.FC = () => {
       setTotal(res.total_results || 0)
       setPage(res.page_number || targetPage)
     } catch (err: any) {
-      alert(`获取官方商品目录失败: ${err.message}`)
+      toast.error('获取官方商品目录失败', err.message)
     } finally {
       setLoading(false)
     }
@@ -130,11 +131,11 @@ export const CatalogTab: React.FC = () => {
         leadtime_days: editOffer.leadtimeDays,
         status: editOffer.status,
       })
-      alert('商品参数已更新生效！')
+      toast.success('商品参数已更新生效！')
       setEditOffer({ open: false })
       loadOffers(page)
     } catch (err: any) {
-      alert(`更新失败: ${err.message}`)
+      toast.error('更新失败', err.message)
     } finally {
       setEditOffer((prev) => ({ ...prev, saving: false }))
     }
@@ -160,8 +161,9 @@ export const CatalogTab: React.FC = () => {
             : o
         )
       )
+      toast.success(isCurrentlyDisabled ? '商品已重新上架' : '商品已停用下架')
     } catch (err: any) {
-      alert(`操作失败: ${err.message}`)
+      toast.error('操作失败', err.message)
     } finally {
       setStatusLoadingId(null)
     }
@@ -182,12 +184,12 @@ export const CatalogTab: React.FC = () => {
 
   const handleCreateSubmit = async () => {
     if (!createModal.barcode.trim()) {
-      alert('请输入商品的官方条形码 (Barcode)')
+      toast.warning('请输入商品的官方条形码 (Barcode)')
       return
     }
     const price = parseInt(createModal.sellingPrice)
     if (isNaN(price) || price <= 0) {
-      alert('请输入有效的售价 (正整数字)')
+      toast.warning('请输入有效的售价 (正整数字)')
       return
     }
     setCreateModal((prev) => ({ ...prev, submitting: true }))
@@ -199,7 +201,7 @@ export const CatalogTab: React.FC = () => {
         rrp: createModal.rrp ? parseInt(createModal.rrp) : undefined,
         leadtime_days: createModal.leadtimeDays ? parseInt(createModal.leadtimeDays) : 7,
       })
-      alert(`成功创建商品 Offer！条码: ${createModal.barcode}`)
+      toast.success('成功创建商品 Offer！', `条码: ${createModal.barcode}`)
       setCreateModal({
         open: false,
         barcode: '',
@@ -210,7 +212,7 @@ export const CatalogTab: React.FC = () => {
       })
       loadOffers(1)
     } catch (err: any) {
-      alert(`创建 Offer 失败: ${err.message}`)
+      toast.error('创建 Offer 失败', err.message)
     } finally {
       setCreateModal((prev) => ({ ...prev, submitting: false }))
     }

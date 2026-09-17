@@ -7,6 +7,7 @@ import { Input } from '../ui/input'
 import { Badge } from '../ui/badge'
 import { Switch } from '../ui/switch'
 import { Dialog, DialogFooter } from '../ui/dialog'
+import { toast } from '../ui/use-toast'
 import {
   Key,
   Sliders,
@@ -124,10 +125,10 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
       if (res.success) {
         setIsEditOpen(false)
         await onRefreshStores()
-        alert('🎉 店铺配置更新成功！')
+        toast.success('店铺配置更新成功！')
       }
     } catch (err: any) {
-      alert(`更新店铺失败: ${err.message}`)
+      toast.error('更新店铺失败', err.message)
     } finally {
       setSavingStore(false)
     }
@@ -135,7 +136,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
 
   const handleDeleteStore = async (store: Store) => {
     if (stores.length <= 1) {
-      alert('系统中至少保留一个店铺，无法删除最后一个店铺！')
+      toast.warning('无法删除', '系统中至少保留一个店铺，无法删除最后一个店铺！')
       return
     }
     if (!confirm(`确定要删除店铺 [${store.name}] (ID: ${store.id}) 吗？\n删除后该店铺的历史监控记录将被清理，此操作不可撤回。`)) {
@@ -145,6 +146,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
       const res = await api.deleteStore(store.id)
       if (res.success) {
         await onRefreshStores()
+        toast.success('店铺已成功删除', store.name)
         if (currentStoreId === store.id) {
           const remaining = stores.filter((s) => s.id !== store.id)
           if (remaining.length > 0) {
@@ -153,7 +155,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
         }
       }
     } catch (err: any) {
-      alert(`删除店铺失败: ${err.message}`)
+      toast.error('删除店铺失败', err.message)
     }
   }
 
@@ -162,12 +164,12 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
     try {
       const res = await api.testStore(store.authorization, store.proxy_url)
       if (res.success) {
-        alert(`✅ 店铺 [${store.name}] 授权测试通过！\n\nTakealot 响应: ${res.message}\n当前在售商品: ${res.total_offers ?? '已联通'}`)
+        toast.success(`店铺 [${store.name}] 授权测试通过！`, `Takealot 响应: ${res.message}\n当前在售商品: ${res.total_offers ?? '已联通'}`)
       } else {
-        alert(`⚠️ 店铺 [${store.name}] 连接测试失败:\n${res.message}`)
+        toast.error(`店铺 [${store.name}] 连接测试失败`, res.message)
       }
     } catch (err: any) {
-      alert(`测试异常: ${err.message}`)
+      toast.error('测试异常', err.message)
     } finally {
       setTestingStoreId(null)
     }
@@ -179,10 +181,10 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
       const res = await api.syncStoreName()
       if (res.success) {
         await onRefreshStores()
-        alert(`🎉 官方店铺名已同步: ${res.name}`)
+        toast.success('官方店铺名已同步', res.name)
       }
     } catch (err: any) {
-      alert(`同步官方名称失败: ${err.message}`)
+      toast.error('同步官方名称失败', err.message)
     } finally {
       setSyncingStoreId(null)
     }
@@ -192,8 +194,9 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
     try {
       await api.updateStore({ id: store.id, is_active: isActive })
       await onRefreshStores()
+      toast.info(`店铺 [${store.name}] 已${isActive ? '开启监控' : '停用'}`)
     } catch (err: any) {
-      alert(`更新店铺状态失败: ${err.message}`)
+      toast.error('更新店铺状态失败', err.message)
     }
   }
 
@@ -205,10 +208,10 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
       const res = await api.updateConfig(activeForm)
       if (res.success) {
         await onRefreshStores()
-        alert('🎉 当前店铺参数已成功保存并立即生效！')
+        toast.success('店铺参数已成功保存并立即生效！')
       }
     } catch (err: any) {
-      alert(`保存失败: ${err.message}`)
+      toast.error('保存失败', err.message)
     } finally {
       setSavingActive(false)
     }
