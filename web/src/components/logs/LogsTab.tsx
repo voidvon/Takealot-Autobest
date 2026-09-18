@@ -67,6 +67,17 @@ export const LogsTab: React.FC = () => {
     }
   }, [])
 
+  // Fallback polling if SSE is disconnected
+  useEffect(() => {
+    if (connected) return
+    const interval = setInterval(() => {
+      api.getLogsHistory().then((data) => {
+        if (Array.isArray(data)) setLogs(data)
+      }).catch(() => {})
+    }, 3000)
+    return () => clearInterval(interval)
+  }, [connected])
+
   // Auto scroll to bottom
   useEffect(() => {
     if (autoScroll && logContainerRef.current) {

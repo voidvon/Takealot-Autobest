@@ -2,14 +2,12 @@
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$DIR"
 
-echo "========================================================"
-echo "🚀 正在启动 Takealot 自动化改价控制中心 (macOS 版)"
-echo "========================================================"
-
-if [ -f "./Takealot-mac" ]; then
-    ./Takealot-mac
-elif [ -f "./Takealot.app/Contents/MacOS/Takealot" ]; then
-    ./Takealot.app/Contents/MacOS/Takealot
+if [ -d "./Takealot.app" ]; then
+    open "./Takealot.app"
+elif [ -d "./build/bin/Takealot.app" ]; then
+    open "./build/bin/Takealot.app"
+elif [ -f "./Takealot-mac" ]; then
+    open "./Takealot-mac"
 elif [ -f "./takealot" ]; then
     ./takealot
 else

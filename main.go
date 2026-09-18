@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"takealot/pkg/api"
@@ -20,6 +22,12 @@ import (
 	"takealot/pkg/engine"
 	"takealot/pkg/license"
 	"takealot/pkg/server"
+
+	"github.com/wailsapp/wails/v2"
+	"github.com/wailsapp/wails/v2/pkg/options"
+	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/mac"
+	"github.com/wailsapp/wails/v2/pkg/options/windows"
 )
 
 //go:embed all:web/dist
@@ -32,13 +40,14 @@ var Version = "0.2.0"
 
 func main() {
 	port := flag.Int("port", 8000, "Web 控制台监听端口")
-	noOpen := flag.Bool("no-open", false, "启动后不自动打开浏览器")
+	serverOnly := flag.Bool("server-only", false, "以纯命令行/服务端模式运行 (不打开桌面 GUI)")
+	noOpen := flag.Bool("no-open", false, "服务端模式下启动后不自动打开浏览器")
 	flag.Parse()
 
 	setupWorkingDir()
 
 	log.Println("========================================================")
-	log.Printf("🚀 正在启动 Takealot 自动化控制中心 (v%s - Go 原生跨平台版)", Version)
+	log.Printf("🚀 正在启动 Takealot 自动化控制中心 (v%s - Wails 跨平台桌面版)", Version)
 	log.Println("========================================================")
 
 	// 1. Initialize SQLite Database & Migrate Legacy Data
@@ -102,33 +111,89 @@ func main() {
 		log.Printf("🔑 软件授权状态: 已激活 [客户: %s | 有效期: %s]", licStatus.Customer, licStatus.ExpiresAtFormatted)
 	} else {
 		log.Printf("⚠️ 软件授权状态: 未激活 (本机机器识别码: %s)", licStatus.MachineID)
-		log.Printf("💡 请在 Web 控制台输入激活码，或联系管理员获取离线授权")
+		log.Printf("💡 请在控制台输入激活码，或联系管理员获取离线授权")
 	}
 
 	// 5. Initialize Automation Engine
 	eng := engine.NewEngine(cfgMgr, clientPool, database, licMgr)
 
-	// 6. Initialize HTTP Server
-	distSubFS, _ := fs.Sub(distEmbedFS, "web/dist")
+	// 6. Initialize HTTP Server & Handler
+	distSubFS, err := fs.Sub(distEmbedFS, "web/dist")
+	if err != nil {
+		log.Printf("⚠️ 提取前端静态文件失败: %v", err)
+	}
 	srv := server.NewServer(cfgMgr, clientPool, eng, database, licMgr, distSubFS, staticHTML, Version)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 	url := fmt.Sprintf("http://%s", addr)
-	log.Printf("🌐 本地控制面板地址: %s", url)
-	log.Println("💡 提示: 按 Ctrl + C 可安全退出服务")
-	log.Println("--------------------------------------------------------")
 
-	// Open browser automatically in a separate goroutine
-	if !*noOpen {
-		go func() {
-			time.Sleep(800 * time.Millisecond)
-			openBrowser(url)
-		}()
+	// 后台启动 HTTP 服务，方便外部浏览器或自动化脚本访问
+	go func() {
+		if err := http.ListenAndServe(addr, srv.Handler()); err != nil && err != http.ErrServerClosed {
+			log.Printf("⚠️ 后台 HTTP 服务监听异常: %v", err)
+		}
+	}()
+
+	log.Printf("🌐 本地后台服务地址: %s", url)
+
+	// 如果指定了仅以纯命令行/服务端模式运行
+	if *serverOnly {
+		log.Println("💻 当前以纯命令行模式运行 (未启动桌面 GUI 窗口)")
+		log.Println("💡 提示: 按 Ctrl + C 可安全退出服务")
+		log.Println("--------------------------------------------------------")
+
+		if !*noOpen {
+			go func() {
+				time.Sleep(800 * time.Millisecond)
+				openBrowser(url)
+			}()
+		}
+
+		quit := make(chan os.Signal, 1)
+		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+		<-quit
+		log.Println("🛑 服务已退出")
+		return
 	}
 
-	// Start server
-	if err := http.ListenAndServe(addr, srv.Handler()); err != nil {
-		log.Fatalf("❌ 服务启动失败: %v", err)
+	// 7. Desktop GUI 模式 (Wails 原生桌面窗口)
+	app := NewApp()
+
+	err = wails.Run(&options.App{
+		Title:             "Takealot 自动化控制中心",
+		Width:             1360,
+		Height:            860,
+		MinWidth:          1024,
+		MinHeight:         700,
+		Frameless:         runtime.GOOS == "windows",
+		CSSDragProperty:   "--wails-draggable",
+		CSSDragValue:      "drag",
+		AssetServer: &assetserver.Options{
+			Assets:  distSubFS,
+			Handler: srv.Handler(),
+		},
+		BackgroundColour: &options.RGBA{R: 248, G: 250, B: 252, A: 1},
+		OnStartup:        app.startup,
+		OnShutdown:       app.shutdown,
+		Bind: []interface{}{
+			app,
+		},
+		Mac: &mac.Options{
+			TitleBar:             mac.TitleBarHiddenInset(),
+			Appearance:           mac.DefaultAppearance,
+			WebviewIsTransparent: false,
+			WindowIsTranslucent:  false,
+		},
+		Windows: &windows.Options{
+			WebviewIsTransparent:             false,
+			WindowIsTranslucent:              false,
+			DisableWindowIcon:                false,
+			DisableFramelessWindowDecorations: false,
+		},
+	})
+
+	if err != nil {
+		log.Fatalf("❌ 桌面应用启动失败: %v", err)
 	}
 }
 

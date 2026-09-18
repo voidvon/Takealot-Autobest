@@ -1,5 +1,7 @@
 import type { EngineStatus, Store, LicenseStatus } from '../../types'
 import { StoreSwitcher } from './StoreSwitcher'
+import { WindowControls } from './WindowControls'
+import { WindowsControls } from './WindowsControls'
 import { Button } from '../ui/button'
 import { Badge } from '../ui/badge'
 import { Play, Pause, Square, Moon, Sun, KeyRound } from 'lucide-react'
@@ -43,19 +45,36 @@ export const Header: React.FC<HeaderProps> = ({
   onStopAllReprice,
 }) => {
 
+  const handleDoubleClick = () => {
+    const rt = (window as any).runtime
+    if (typeof rt?.WindowToggleMaximise === 'function') {
+      rt.WindowToggleMaximise()
+    }
+  }
+
   return (
-    <header className="sticky top-0 z-40 w-full border-b border-border bg-background/95 backdrop-blur-sm">
+    <header
+      className="sticky top-0 z-40 w-full shrink-0 border-b border-border bg-background/95 backdrop-blur-sm select-none"
+      style={{ '--wails-draggable': 'drag', WebkitAppRegion: 'drag' } as React.CSSProperties}
+      onDoubleClick={handleDoubleClick}
+    >
       <div className="flex h-14 items-center justify-between px-4 sm:px-6">
         {/* Brand & Workspace info */}
-        <div className="flex items-center gap-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary font-black text-primary-foreground text-sm shadow-xs">
+        <div
+          className="flex items-center gap-3 min-w-0"
+          style={{ '--wails-draggable': 'no-drag', WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+        >
+          {/* In-page Window Controls (Traffic Lights) */}
+          <WindowControls />
+
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary font-black text-primary-foreground text-sm shadow-xs shrink-0">
             T
           </div>
-          <div className="flex items-center gap-2">
-            <h1 className="font-semibold text-sm text-foreground tracking-tight hidden md:inline">
+          <div className="flex items-center gap-2 min-w-0">
+            <h1 className="font-semibold text-sm text-foreground tracking-tight hidden md:inline truncate">
               Takealot 智能电商自动化中台
             </h1>
-            <Badge variant="secondary" className="hidden lg:inline-flex text-[10px] font-mono px-1.5 h-4.5">
+            <Badge variant="secondary" className="hidden lg:inline-flex text-[10px] font-mono px-1.5 h-4.5 shrink-0">
               v{version}
             </Badge>
 
@@ -64,7 +83,7 @@ export const Header: React.FC<HeaderProps> = ({
               <button
                 type="button"
                 onClick={onOpenLicense}
-                className="inline-flex items-center transition-transform active:scale-95 focus:outline-hidden"
+                className="inline-flex items-center transition-transform active:scale-95 focus:outline-hidden shrink-0"
                 title="点击查看授权详情或激活"
               >
                 {licenseStatus.activated && !licenseStatus.expired ? (
@@ -84,7 +103,7 @@ export const Header: React.FC<HeaderProps> = ({
 
           {/* Multi-Store Switcher */}
           {stores.length > 0 && onSelectStore && onOpenAddStore && (
-            <div className="pl-1 sm:pl-2 sm:border-l sm:border-border/60">
+            <div className="pl-1 sm:pl-2 sm:border-l sm:border-border/60 shrink-0">
               <StoreSwitcher
                 stores={stores}
                 currentStoreId={currentStoreId}
@@ -98,9 +117,12 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
 
         {/* Engine Live Metrics & Controls */}
-        <div className="flex items-center gap-3 sm:gap-4">
+        <div
+          className="flex items-center gap-2 sm:gap-3 shrink-0"
+          style={{ '--wails-draggable': 'no-drag', WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+        >
           {/* Quick Metrics */}
-          <div className="hidden lg:flex items-center gap-4 pr-3 border-r border-border text-xs">
+          <div className="hidden xl:flex items-center gap-4 pr-3 border-r border-border text-xs shrink-0">
             <div className="flex items-center gap-1.5">
               <span className="text-muted-foreground text-[11px]">引擎态势:</span>
               {!status.is_running ? (
@@ -191,6 +213,9 @@ export const Header: React.FC<HeaderProps> = ({
               {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </Button>
           </div>
+
+          {/* Windows-style Window Controls on the right */}
+          <WindowsControls />
         </div>
       </div>
     </header>

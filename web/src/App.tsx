@@ -262,7 +262,7 @@ export const App: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-background text-foreground">
+    <div className="h-screen w-screen flex flex-col bg-background text-foreground overflow-hidden">
       {/* Global Toast Notification Viewport (Top Center) */}
       <Toaster />
 
@@ -307,14 +307,14 @@ export const App: React.FC = () => {
       />
 
       {/* Main Layout: Sidebar + Tab Content */}
-      <div className="flex-1 flex flex-col md:flex-row w-full max-w-[1680px] mx-auto">
+      <div className="flex-1 min-h-0 flex flex-col md:flex-row w-full max-w-[1680px] mx-auto overflow-hidden">
         <Sidebar
           activeTab={activeTab}
           onSelectTab={handleSelectTab}
         />
 
         {/* Tab Content Area: keyed with currentStoreId so switching store resets and reloads views cleanly */}
-        <main key={`${activeTab}-${currentStoreId}`} className="flex-1 p-4 sm:p-6 lg:p-8 overflow-y-auto min-w-0">
+        <main key={`${activeTab}-${currentStoreId}`} className="flex-1 min-h-0 h-full p-4 sm:p-6 lg:p-8 overflow-y-auto min-w-0">
           {activeTab === 'dashboard' && (
             <DashboardTab
               onNavigate={handleSelectTab}

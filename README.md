@@ -1,36 +1,36 @@
-# Takealot 自动化控制中心 (Go 原生单文件跨平台版)
+# Takealot 自动化控制中心 (Wails 跨平台原生桌面版)
 
-本项目是基于原 Windows 客户端（WinForms + CefSharp）进行**完全去依赖、跨平台重构的 Go 原生版本**。已彻底剥离原作者的第三方计费验证服务器与 Windows 机器码锁定，编译后为**零外部依赖的独立单文件可执行程序**（包含内嵌 Web UI）。
+本项目是基于现代化技术栈打造的 **Go + Wails + React 跨平台原生桌面应用**。采用系统原生渲染内核（macOS WebKit、Windows WebView2），完全告别命令行黑框，双击即为独立美观的桌面程序。
 
 ---
 
 ## ⚡ 特性优势
 
-1. **单文件零依赖**：基于 Go 语言原生开发，通过 `//go:embed` 将前端控制台直接编译进二进制，无需安装 Python、Node.js 或 .NET 运行时环境。
-2. **极速启动与低资源占用**：内存占用仅约 15MB ~ 25MB，比原版 Chromium 内嵌方案轻量 95% 以上，适合在 Mac 或低配 Linux VPS 上 7x24 小时静默运行。
-3. **高并发与稳定调度**：采用 Goroutine 异步调度，支持毫秒级任务响应与 SSE 实时控制台日志推流。
-4. **全面 SQLite 本地数据库**：
-   - 商品监控底价及调价/跟卖历史全面升级为 SQLite (`takealot.db`) 存储；内置旧版 [`GJDATA`](file:///Users/voidvon/Desktop/output/GJDATA) 自动无缝迁移机制。
-   - 原生兼容 [`待上传摸板.xlsx`](file:///Users/voidvon/Desktop/output/待上传摸板.xlsx) 表格拖拽批量解析与跟卖上架。
+1. **现代化原生桌面窗口**：基于 Wails v2 构建，双击直接启动独立桌面应用窗口（无终端黑框），内置 Vite + React 现代化控制台。
+2. **极速轻量与低资源占用**：打包体积仅 15MB 左右，内存占用约 30MB，远优于传统 Electron。
+3. **双运行模式支持**：
+   - **桌面 GUI 模式**（默认）：直接双击打开桌面独立软件。
+   - **服务端模式**（`--server-only`）：供 Linux VPS 或后台无界面服务器部署运行。
+4. **高并发与稳定调度**：采用 Goroutine 异步调度，支持毫秒级任务响应与实时控制台日志推流。
+5. **全面 SQLite 本地数据库**：
+   - 商品监控底价及调价/跟卖历史全面升级为 SQLite (`takealot.db`) 存储；内置旧版 `GJDATA` 自动无缝迁移机制。
+   - 原生兼容 `待上传摸板.xlsx` 表格拖拽批量解析与跟卖上架。
 
 ---
 
 ## 🚀 快速启动
 
-在终端中执行根目录下的启动脚本：
+### 方式 1：双击运行原生桌面端（推荐）
+* **macOS**：直接双击打开根目录下的 `Takealot.app`。
+* **Windows**：直接双击运行 `Takealot.exe`，原生桌面窗口直接启动，没有任何 cmd 终端黑框。
+
+### 方式 2：纯命令行 / 服务端模式
+在终端中指定 `--server-only` 参数运行：
 
 ```bash
-cd /Users/voidvon/Desktop/output
-./start.sh
+./takealot --server-only
 ```
-
-或者直接运行编译好的二进制：
-
-```bash
-./takealot
-```
-
-程序启动后会自动在默认浏览器中打开控制面板：  
+程序将以纯后端服务模式运行，并可在浏览器中访问：  
 👉 **http://127.0.0.1:8000**
 
 ---
