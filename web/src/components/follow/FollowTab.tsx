@@ -213,6 +213,22 @@ export const FollowTab: React.FC<FollowTabProps> = ({ onNavigateLogs }) => {
         <TabsContent value="excel-follow" className="space-y-5 mt-4">
           {/* Upload Drop Area */}
           <Card>
+            <CardHeader className="p-4 sm:p-5 flex flex-row items-center justify-between border-b border-border">
+              <div>
+                <CardTitle className="text-sm sm:text-base font-semibold">批量跟卖表格导入</CardTitle>
+                <CardDescription className="text-xs">
+                  上传 Excel 表格批量导入商品变体，系统自动识别库存、保底底价与商品链接
+                </CardDescription>
+              </div>
+              <a
+                href="/api/follow/template"
+                download="批量导入模板.xlsx"
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:text-primary/80 transition-colors bg-primary/10 hover:bg-primary/15 px-3 py-1.5 rounded-lg shrink-0"
+              >
+                <Download className="h-3.5 w-3.5" />
+                <span>下载批量导入模板 (.xlsx)</span>
+              </a>
+            </CardHeader>
             <CardContent className="p-6">
               <div
                 onDragEnter={handleDrag}
@@ -245,7 +261,7 @@ export const FollowTab: React.FC<FollowTabProps> = ({ onNavigateLogs }) => {
                         : '点击或拖拽 Excel 文件到此处上传'}
                     </div>
                     <p className="text-xs text-muted-foreground max-w-sm mx-auto">
-                      表格首列为商品链接（例如 https://www.takealot.com/x/PLID...），系统将自动嗅探全部颜色与尺码变体
+                      包含列：库存、最低价、URL/商品链接（支持智能表头识别），系统将自动嗅探全部颜色与尺码变体
                     </p>
                   </div>
                   <div className="flex items-center gap-2 pt-2">

@@ -73,7 +73,7 @@ func (m *Manager) Load() {
 		}
 	}
 
-	// 2. Fallback to can.ini
+	// Fallback to can.ini
 	if iniData, err := os.ReadFile(LegacyCanIni); err == nil {
 		lines := strings.Split(string(iniData), "\n")
 		if len(lines) >= 7 {
@@ -94,9 +94,6 @@ func (m *Manager) Load() {
 			}
 		}
 	}
-
-	// Save migrated config immediately
-	m.saveLocked()
 }
 
 func (m *Manager) Get() Config {
@@ -150,9 +147,7 @@ func (m *Manager) UpdateTargets(newTargets map[string]Target) error {
 }
 
 func (m *Manager) saveLocked() error {
-	data, err := json.MarshalIndent(m.cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(ConfigFile, data, 0644)
+	// Database (SQLite) is now the single source of truth for persistent storage.
+	// We no longer write or overwrite config.json on disk.
+	return nil
 }

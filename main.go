@@ -213,7 +213,10 @@ func openBrowser(url string) {
 }
 
 func setupWorkingDir() {
-	// If config.json already exists in current working dir, use it directly
+	// If database or config already exists in current working dir, use it directly
+	if _, err := os.Stat("takealot.db"); err == nil {
+		return
+	}
 	if _, err := os.Stat("config.json"); err == nil {
 		return
 	}

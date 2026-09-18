@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -141,6 +142,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/stores/test", s.handleStoreTest)
 	s.mux.HandleFunc("/api/stores/sync", s.handleStoreSync)
 	s.mux.HandleFunc("/api/follow/upload", s.handleFollowUpload)
+	s.mux.HandleFunc("/api/follow/template", s.handleFollowTemplate)
 	s.mux.HandleFunc("/api/follow/start", s.handleFollowStart)
 	s.mux.HandleFunc("/api/follow/history", s.handleFollowHistory)
 	s.mux.HandleFunc("/api/logs/stream", s.handleLogsStream)
@@ -820,31 +822,31 @@ func (s *Server) handleFollowUpload(w http.ResponseWriter, r *http.Request) {
 
 	var items []engine.FollowItem
 	for _, row := range rows[1:] {
-		maxNeeded := urlIdx
-		if stockIdx > maxNeeded {
-			maxNeeded = stockIdx
+		if urlIdx >= len(row) {
+			continue
 		}
-		if minPriceIdx > maxNeeded {
-			maxNeeded = minPriceIdx
+		u := strings.TrimSpace(row[urlIdx])
+		if u == "" {
+			continue
+		}
+		stock := 1
+		if stockIdx < len(row) {
+			if s, err := strconv.Atoi(strings.TrimSpace(row[stockIdx])); err == nil && s > 0 {
+				stock = s
+			}
+		}
+		minP := 0
+		if minPriceIdx < len(row) {
+			if p, err := strconv.Atoi(strings.TrimSpace(row[minPriceIdx])); err == nil {
+				minP = p
+			}
 		}
 
-		if len(row) > maxNeeded {
-			u := strings.TrimSpace(row[urlIdx])
-			if u == "" {
-				continue
-			}
-			stock, _ := strconv.Atoi(strings.TrimSpace(row[stockIdx]))
-			if stock <= 0 {
-				stock = 1
-			}
-			minP, _ := strconv.Atoi(strings.TrimSpace(row[minPriceIdx]))
-
-			items = append(items, engine.FollowItem{
-				URL:      u,
-				Stock:    stock,
-				MinPrice: minP,
-			})
-		}
+		items = append(items, engine.FollowItem{
+			URL:      u,
+			Stock:    stock,
+			MinPrice: minP,
+		})
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]any{
@@ -852,6 +854,39 @@ func (s *Server) handleFollowUpload(w http.ResponseWriter, r *http.Request) {
 		"total":   len(items),
 		"items":   items,
 	})
+}
+
+func (s *Server) handleFollowTemplate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	w.Header().Set("Content-Disposition", "attachment; filename=\"批量导入模板.xlsx\"")
+
+	// If file exists on disk, serve it directly
+	if data, err := os.ReadFile("批量导入模板.xlsx"); err == nil {
+		_, _ = w.Write(data)
+		return
+	}
+	if data, err := os.ReadFile("待上传摸板.xlsx"); err == nil {
+		_, _ = w.Write(data)
+		return
+	}
+
+	// Otherwise, dynamically generate standard template
+	f := excelize.NewFile()
+	defer f.Close()
+	sheet := f.GetSheetName(0)
+	_ = f.SetCellValue(sheet, "A1", "库存")
+	_ = f.SetCellValue(sheet, "B1", "最低价")
+	_ = f.SetCellValue(sheet, "C1", "URL")
+	_ = f.SetCellValue(sheet, "A2", 10)
+	_ = f.SetCellValue(sheet, "B2", 150)
+	_ = f.SetCellValue(sheet, "C2", "https://www.takealot.com/mens-short-sleeve-serengeti-2-tone-bush-shirt/PLID60569699?colour_variant=Green&size=5XL")
+
+	_ = f.Write(w)
 }
 
 func (s *Server) handleFollowStart(w http.ResponseWriter, r *http.Request) {

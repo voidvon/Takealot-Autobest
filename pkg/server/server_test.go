@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -143,5 +144,72 @@ func TestMultiStoreServerAPI(t *testing.T) {
 	storesFinal, _ := database.GetStores()
 	if len(storesFinal) != 1 {
 		t.Fatalf("删除后应剩下 1 个店铺，实际: %d", len(storesFinal))
+	}
+}
+
+func TestFollowTemplateAndUpload(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "takealot_follow_test_*")
+	if err != nil {
+		t.Fatalf("创建临时目录失败: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	dbPath := filepath.Join(tempDir, "follow_test.db")
+	database, _ := db.New(dbPath)
+	defer database.Close()
+
+	cfgMgr := config.NewManager(tempDir)
+	clientPool := api.NewClientPool()
+	eng := engine.NewEngine(cfgMgr, clientPool, database, nil)
+	srv := NewServer(cfgMgr, clientPool, eng, database, nil, nil, nil, "0.2.0")
+
+	// 1. Test GET /api/follow/template
+	reqTpl := httptest.NewRequest(http.MethodGet, "/api/follow/template", nil)
+	wTpl := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(wTpl, reqTpl)
+
+	if wTpl.Code != http.StatusOK {
+		t.Fatalf("GET /api/follow/template 失败: %d", wTpl.Code)
+	}
+	tplBytes := wTpl.Body.Bytes()
+	if len(tplBytes) == 0 {
+		t.Fatalf("下载的模板内容为空")
+	}
+
+	// 2. Test POST /api/follow/upload using the downloaded template bytes
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	part, err := mw.CreateFormFile("file", "test_template.xlsx")
+	if err != nil {
+		t.Fatalf("创建 FormFile 失败: %v", err)
+	}
+	if _, err := part.Write(tplBytes); err != nil {
+		t.Fatalf("写入模板字节失败: %v", err)
+	}
+	mw.Close()
+
+	reqUp := httptest.NewRequest(http.MethodPost, "/api/follow/upload", &body)
+	reqUp.Header.Set("Content-Type", mw.FormDataContentType())
+	wUp := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(wUp, reqUp)
+
+	if wUp.Code != http.StatusOK {
+		t.Fatalf("POST /api/follow/upload 失败: %d, body: %s", wUp.Code, wUp.Body.String())
+	}
+
+	var upRes struct {
+		Success bool                `json:"success"`
+		Total   int                 `json:"total"`
+		Items   []engine.FollowItem `json:"items"`
+	}
+	if err := json.NewDecoder(wUp.Body).Decode(&upRes); err != nil {
+		t.Fatalf("解析 upload 响应失败: %v", err)
+	}
+
+	if !upRes.Success || upRes.Total != 1 || len(upRes.Items) != 1 {
+		t.Fatalf("上传解析结果不符合预期: %+v", upRes)
+	}
+	if upRes.Items[0].Stock != 10 || upRes.Items[0].MinPrice != 150 {
+		t.Errorf("解析的库存或保底价不匹配: %+v", upRes.Items[0])
 	}
 }
