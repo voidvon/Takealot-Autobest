@@ -589,6 +589,9 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 		var imageURL string
 
 		if o, ok := offerMap[tsinID]; ok {
+			if id := api.AnyToString(o.TSIN.ProductlineID); id != "" && id != "0" {
+				plid = id
+			}
 			offerID = strconv.FormatInt(o.OfferID, 10)
 			curPrice = int(o.SellingPrice)
 			title = o.TSIN.Title
@@ -603,6 +606,9 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 				continue
 			}
 			curOffer := offerResp.Offers[0]
+			if id := api.AnyToString(curOffer.TSIN.ProductlineID); id != "" && id != "0" {
+				plid = id
+			}
 			offerID = strconv.FormatInt(curOffer.OfferID, 10)
 			curPrice = int(curOffer.SellingPrice)
 			title = curOffer.TSIN.Title
@@ -611,6 +617,20 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 				sku = curOffer.SKU
 			}
 			imageURL = curOffer.TSIN.ImageURL
+		}
+
+		owner, err := e.db.ClaimRepriceProduct(w.storeID, tsinID, plid)
+		if err != nil {
+			e.Log(fmt.Sprintf("同链接防竞争校验失败，跳过商品 (TSIN: %s): %v", tsinID, err), "ERROR", w.storeID, w.storeName)
+			continue
+		}
+		if owner != w.storeID {
+			ownerName := owner
+			if ownerStore, err := e.db.GetStore(owner); err == nil && ownerStore != nil {
+				ownerName = ownerStore.Name
+			}
+			e.Log(fmt.Sprintf("同链接防竞争：商品 (TSIN: %s, PLID: %s) 由店铺 [%s] 负责改价，当前店铺自动跳过", tsinID, plid, ownerName), "INFO", w.storeID, w.storeName)
+			continue
 		}
 
 		w.mu.Lock()

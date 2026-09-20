@@ -77,7 +77,7 @@ type ShipmentRecord struct {
 	ID             int64                `json:"id"`
 	StoreID        string               `json:"store_id"`
 	ShipmentNumber string               `json:"shipment_number"`
-	Status         string               `json:"status"` // "draft", "confirmed", "shipped", "delivered", "cancelled"
+	Status         string               `json:"status"`         // "draft", "confirmed", "shipped", "delivered", "cancelled"
 	DestinationDC  string               `json:"destination_dc"` // "JHB", "CPT", "DUR", "ALL"
 	TotalItems     int                  `json:"total_items"`
 	TotalUnits     int                  `json:"total_units"`
@@ -213,6 +213,14 @@ func (d *DB) Close() error {
 }
 
 func (d *DB) migrate() error {
+	// Persistent ownership prevents our stores from repricing against each other.
+	if _, err := d.conn.Exec(`CREATE TABLE IF NOT EXISTS reprice_owners (
+		product_key TEXT PRIMARY KEY,
+		store_id TEXT NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	)`); err != nil {
+		return err
+	}
 	// 1. 初始化 stores 表
 	storeTableQuery := `CREATE TABLE IF NOT EXISTS stores (
 		id TEXT PRIMARY KEY,
@@ -601,6 +609,9 @@ func (d *DB) DeleteStore(id string) error {
 	}
 	defer tx.Rollback()
 
+	if _, err := tx.Exec(`DELETE FROM reprice_owners WHERE store_id = ?`, id); err != nil {
+		return err
+	}
 	_, _ = tx.Exec(`DELETE FROM reprice_targets WHERE store_id = ?`, id)
 	_, _ = tx.Exec(`DELETE FROM cached_offers WHERE store_id = ?`, id)
 	_, _ = tx.Exec(`DELETE FROM reprice_history WHERE store_id = ?`, id)
@@ -1622,4 +1633,3 @@ func (d *DB) SetSystemConfig(key, value string) error {
 	)
 	return err
 }
-
