@@ -23,6 +23,7 @@ import {
   RefreshCw,
   Globe,
   Radio,
+  Rocket,
 } from 'lucide-react'
 
 interface SettingsTabProps {
@@ -31,6 +32,10 @@ interface SettingsTabProps {
   onRefreshStores: () => Promise<void>
   onSelectStore: (storeId: string) => void
   onOpenAddStore?: () => void
+  version?: string
+  updateInfo?: import('../../types').UpdateInfo | null
+  onOpenUpdate?: () => void
+  onCheckUpdate?: () => Promise<void>
 }
 
 export const SettingsTab: React.FC<SettingsTabProps> = ({
@@ -39,6 +44,10 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
   onRefreshStores,
   onSelectStore,
   onOpenAddStore,
+  version,
+  updateInfo,
+  onOpenUpdate,
+  onCheckUpdate,
 }) => {
   const [editingStore, setEditingStore] = useState<Store | null>(null)
   const [isEditOpen, setIsEditOpen] = useState(false)
@@ -61,6 +70,18 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
   const [savingStore, setSavingStore] = useState(false)
   const [syncingStoreId, setSyncingStoreId] = useState<string | null>(null)
   const [testingStoreId, setTestingStoreId] = useState<string | null>(null)
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
+
+  const handleManualCheck = async () => {
+    if (onCheckUpdate) {
+      setCheckingUpdate(true)
+      try {
+        await onCheckUpdate()
+      } finally {
+        setCheckingUpdate(false)
+      }
+    }
+  }
 
   // Active store config form
   const [activeForm, setActiveForm] = useState<SystemConfig>({
@@ -548,6 +569,75 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
           </CardContent>
         </Card>
       )}
+
+      {/* 3. 软件版本与自动更新 */}
+      <Card className="border border-border/80 shadow-xs">
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Rocket className="h-4 w-4 text-primary" />
+              <CardTitle className="text-sm font-semibold">软件版本与自动更新</CardTitle>
+            </div>
+            <Badge variant="secondary" className="font-mono text-xs">
+              v{(version || '0.2.0').replace(/^v/, '')}
+            </Badge>
+          </div>
+          <CardDescription className="text-xs">
+            基于 GitHub Releases 自动化检查与跨平台热更新，适配 macOS 与 Windows 原生桌面端
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 pt-0">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-3.5 rounded-xl border border-border/60 bg-muted/20 text-xs">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="font-medium text-foreground">当前运行版本:</span>
+                <span className="font-mono font-semibold text-primary">
+                  v{(version || '0.2.0').replace(/^v/, '')}
+                </span>
+                {updateInfo?.has_update ? (
+                  <Badge variant="success" className="text-[10px] px-1.5 py-0 h-4">
+                    发现新版本: v{updateInfo.version.replace(/^v/, '')}
+                  </Badge>
+                ) : (
+                  <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4 text-muted-foreground">
+                    已是最新版本
+                  </Badge>
+                )}
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                {updateInfo?.has_update
+                  ? `最新版本 ${updateInfo.tag_name} 已就绪，点击右侧按钮立即自动更新`
+                  : '系统启动时会自动检查更新，也可随时点击右侧按钮手动检测 GitHub Releases'}
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              {updateInfo?.has_update ? (
+                <Button
+                  size="default"
+                  variant="default"
+                  onClick={onOpenUpdate}
+                  className="gap-2 text-xs h-9 px-4 shadow-xs font-semibold"
+                >
+                  <Rocket className="h-3.5 w-3.5" />
+                  <span>立即更新并重启</span>
+                </Button>
+              ) : (
+                <Button
+                  size="default"
+                  variant="outline"
+                  onClick={handleManualCheck}
+                  loading={checkingUpdate}
+                  className="gap-2 text-xs h-9 px-3.5 font-medium"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  <span>检查最新版本</span>
+                </Button>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* 2. 编辑店铺 Dialog */}
       <Dialog

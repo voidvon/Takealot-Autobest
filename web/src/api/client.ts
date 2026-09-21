@@ -13,7 +13,9 @@ import type {
   StockHealthStats,
   FollowItem,
   TargetConfig,
-  LicenseStatus,
+  AccountStatus,
+  UpdateInfo,
+  UpdateProgress,
 } from '../types'
 
 let currentStoreId = localStorage.getItem('takealot_active_store_id') || ''
@@ -296,11 +298,22 @@ export const api = {
     request<{ success: boolean }>(`/api/fulfillment/bookings/delete?id=${id}`, {
       method: 'POST',
     }),
-  // License Management
-  getLicenseStatus: () => request<LicenseStatus>('/api/license/status'),
-  activateLicense: (licenseKey: string) =>
-    request<{ success: boolean; message: string; license: LicenseStatus; error?: string }>('/api/license/activate', {
+  // Online member account; remote session stays in the Go process.
+  getAccountStatus: () => request<AccountStatus>('/api/account/status'),
+  refreshAccount: () => request<AccountStatus>('/api/account/refresh', { method: 'POST', body: '{}' }),
+  loginAccount: (identifier: string, password: string) =>
+    request<AccountStatus>('/api/account/login', { method: 'POST', body: JSON.stringify({ identifier, password }) }),
+  registerAccount: (username: string, email: string, password: string) =>
+    request<{ ok: boolean }>('/api/account/register', { method: 'POST', body: JSON.stringify({ username, email, password }) }),
+  logoutAccount: () => request<AccountStatus>('/api/account/logout', { method: 'POST', body: '{}' }),
+
+  // Automatic Updater
+  checkUpdate: (force = false) =>
+    request<UpdateInfo>(`/api/updater/check${force ? '?force=true' : ''}`),
+  applyUpdate: (payload?: { proxy?: boolean; download_url?: string }) =>
+    request<{ success: boolean; message: string }>('/api/updater/apply', {
       method: 'POST',
-      body: JSON.stringify({ license_key: licenseKey }),
+      body: JSON.stringify(payload || {}),
     }),
+  getUpdateProgress: () => request<UpdateProgress>('/api/updater/progress'),
 }

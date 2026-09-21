@@ -41,11 +41,12 @@ func TestMultiStoreServerAPI(t *testing.T) {
 	clientPool.GetOrCreate(defStore.ID, defStore.Authorization, defStore.ProxyURL)
 
 	eng := engine.NewEngine(cfgMgr, clientPool, database, nil)
-	srv := NewServer(cfgMgr, clientPool, eng, database, nil, nil, nil, "0.2.0")
+	srv := NewServer(cfgMgr, clientPool, eng, database, nil, nil, nil, nil, "0.2.0")
 
 	// 1. Test GET /api/stores
-	req := httptest.NewRequest(http.MethodGet, "/api/stores", nil)
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8000/api/stores", nil)
 	w := httptest.NewRecorder()
+	req.Host = "127.0.0.1:8000"
 	srv.Handler().ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
@@ -72,7 +73,7 @@ func TestMultiStoreServerAPI(t *testing.T) {
 		ProxyURL:          "http://127.0.0.1:8888",
 	}
 	body, _ := json.Marshal(newStorePayload)
-	req2 := httptest.NewRequest(http.MethodPost, "/api/stores", bytes.NewReader(body))
+	req2 := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8000/api/stores", bytes.NewReader(body))
 	w2 := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w2, req2)
 
@@ -91,7 +92,7 @@ func TestMultiStoreServerAPI(t *testing.T) {
 		"tsin1/plid1": {Selected: true, MinPrice: 100, MaxPrice: 200},
 	}
 	bodyTarget1, _ := json.Marshal(targetMap1)
-	reqT1 := httptest.NewRequest(http.MethodPost, "/api/targets", bytes.NewReader(bodyTarget1))
+	reqT1 := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8000/api/targets", bytes.NewReader(bodyTarget1))
 	reqT1.Header.Set("X-Store-Id", "default")
 	wT1 := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(wT1, reqT1)
@@ -103,7 +104,7 @@ func TestMultiStoreServerAPI(t *testing.T) {
 		"tsin1/plid1": {Selected: true, MinPrice: 180, MaxPrice: 350},
 	}
 	bodyTarget2, _ := json.Marshal(targetMap2)
-	reqT2 := httptest.NewRequest(http.MethodPost, "/api/targets", bytes.NewReader(bodyTarget2))
+	reqT2 := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8000/api/targets", bytes.NewReader(bodyTarget2))
 	reqT2.Header.Set("X-Store-Id", "store_branch_2")
 	wT2 := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(wT2, reqT2)
@@ -112,7 +113,7 @@ func TestMultiStoreServerAPI(t *testing.T) {
 	}
 
 	// Fetch targets for default
-	reqG1 := httptest.NewRequest(http.MethodGet, "/api/targets", nil)
+	reqG1 := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8000/api/targets", nil)
 	reqG1.Header.Set("X-Store-Id", "default")
 	wG1 := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(wG1, reqG1)
@@ -123,7 +124,7 @@ func TestMultiStoreServerAPI(t *testing.T) {
 	}
 
 	// Fetch targets for store_branch_2
-	reqG2 := httptest.NewRequest(http.MethodGet, "/api/targets", nil)
+	reqG2 := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8000/api/targets", nil)
 	reqG2.Header.Set("X-Store-Id", "store_branch_2")
 	wG2 := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(wG2, reqG2)
@@ -134,7 +135,7 @@ func TestMultiStoreServerAPI(t *testing.T) {
 	}
 
 	// 4. Test DELETE /api/stores
-	reqDel := httptest.NewRequest(http.MethodDelete, "/api/stores?id=store_branch_2", nil)
+	reqDel := httptest.NewRequest(http.MethodDelete, "http://127.0.0.1:8000/api/stores?id=store_branch_2", nil)
 	wDel := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(wDel, reqDel)
 	if wDel.Code != http.StatusOK {
@@ -161,10 +162,10 @@ func TestFollowTemplateAndUpload(t *testing.T) {
 	cfgMgr := config.NewManager(tempDir)
 	clientPool := api.NewClientPool()
 	eng := engine.NewEngine(cfgMgr, clientPool, database, nil)
-	srv := NewServer(cfgMgr, clientPool, eng, database, nil, nil, nil, "0.2.0")
+	srv := NewServer(cfgMgr, clientPool, eng, database, nil, nil, nil, nil, "0.2.0")
 
 	// 1. Test GET /api/follow/template
-	reqTpl := httptest.NewRequest(http.MethodGet, "/api/follow/template", nil)
+	reqTpl := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8000/api/follow/template", nil)
 	wTpl := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(wTpl, reqTpl)
 
@@ -188,7 +189,7 @@ func TestFollowTemplateAndUpload(t *testing.T) {
 	}
 	mw.Close()
 
-	reqUp := httptest.NewRequest(http.MethodPost, "/api/follow/upload", &body)
+	reqUp := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8000/api/follow/upload", &body)
 	reqUp.Header.Set("Content-Type", mw.FormDataContentType())
 	wUp := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(wUp, reqUp)

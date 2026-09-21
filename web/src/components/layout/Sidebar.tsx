@@ -1,15 +1,19 @@
 import React from 'react'
 import { cn } from '../../lib/utils'
 import { Badge } from '../ui/badge'
+import { Button } from '../ui/button'
+import type { AccountStatus } from '../../types'
 import {
   LayoutDashboard,
   TrendingUp,
   PackageCheck,
   ShoppingBag,
   Layers,
-  Terminal,
   Settings,
-  ShieldCheck,
+  Crown,
+  User,
+  Sun,
+  Moon,
 } from 'lucide-react'
 
 export type TabId = 'dashboard' | 'repricer' | 'catalog' | 'sales' | 'follow' | 'settings'
@@ -18,13 +22,25 @@ interface SidebarProps {
   activeTab: TabId
   onSelectTab: (tab: TabId) => void
   repricingAlertCount?: number
+  accountStatus?: AccountStatus | null
+  onOpenAccount?: () => void
+  darkMode?: boolean
+  onToggleDarkMode?: () => void
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
   activeTab,
   onSelectTab,
   repricingAlertCount = 0,
+  accountStatus,
+  onOpenAccount,
+  darkMode,
+  onToggleDarkMode,
 }) => {
+  const isAuthenticated = Boolean(accountStatus?.authenticated)
+  const displayName = accountStatus?.user?.display_name || accountStatus?.user?.username || '用户'
+  const avatarChar = displayName ? displayName.slice(0, 1).toUpperCase() : 'U'
+
   const navItems: {
     id: TabId
     label: string
@@ -114,21 +130,75 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       </div>
 
-      {/* Footer System Status Block */}
+      {/* Footer User Profile & Dark Mode Block */}
       <div className="pt-3 mt-auto border-t border-border shrink-0">
-        <div className="rounded-lg border border-border bg-muted/30 p-2.5 space-y-1.5">
-          <div className="flex items-center justify-between text-xs">
-            <span className="font-semibold text-foreground flex items-center gap-1.5">
-              <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />
-              <span>官方 API 运行</span>
-            </span>
-            <Badge variant="success" dot className="text-[10px] py-0 px-1.5 h-4">
-              在线
-            </Badge>
+        <div
+          onClick={onOpenAccount}
+          className={cn(
+            "group rounded-lg border border-border/80 bg-muted/30 hover:bg-muted/60 p-2 flex items-center justify-between gap-1.5 transition-colors select-none",
+            onOpenAccount && "cursor-pointer"
+          )}
+          title={isAuthenticated ? "点击查看/管理会员账号" : "点击登录账号"}
+        >
+          {/* Left part: Avatar + Username + VIP Badge */}
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            {isAuthenticated ? (
+              <>
+                <div className="h-7 w-7 rounded-full bg-primary/15 text-primary border border-primary/25 flex items-center justify-center font-bold text-xs shrink-0 shadow-xs">
+                  {avatarChar}
+                </div>
+                <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                  <span
+                    className="text-xs font-semibold text-foreground truncate min-w-0"
+                    title={displayName}
+                  >
+                    {displayName}
+                  </span>
+                  {accountStatus?.eligible ? (
+                    <Badge variant="success" className="text-[10px] px-1.5 h-4.5 shrink-0 gap-1 font-medium">
+                      <Crown className="w-2.5 h-2.5" />
+                      <span>{accountStatus.expires_at ? 'VIP 会员' : '长期 VIP'}</span>
+                    </Badge>
+                  ) : (
+                    <Badge variant="destructive" className="text-[10px] px-1.5 h-4.5 shrink-0 gap-1 font-medium animate-pulse">
+                      <Crown className="w-2.5 h-2.5" />
+                      <span>开通 VIP</span>
+                    </Badge>
+                  )}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="h-7 w-7 rounded-full bg-muted text-muted-foreground border border-border flex items-center justify-center shrink-0">
+                  <User className="h-3.5 w-3.5" />
+                </div>
+                <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                  <span className="text-xs font-semibold text-muted-foreground truncate min-w-0">
+                    未登录
+                  </span>
+                  <Badge variant="secondary" className="text-[10px] px-1.5 h-4.5 shrink-0 font-medium">
+                    登录 / 会员
+                  </Badge>
+                </div>
+              </>
+            )}
           </div>
-          <p className="text-[10px] text-muted-foreground leading-snug">
-            Seller Key 鉴权 · SQLite 事务持久化
-          </p>
+
+          {/* Right part: Dark Mode Toggle */}
+          {onToggleDarkMode && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={(e) => {
+                e.stopPropagation()
+                onToggleDarkMode()
+              }}
+              className="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground rounded-md transition-colors"
+              title={darkMode ? '切换为明亮模式' : '切换为暗色模式'}
+            >
+              {darkMode ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+            </Button>
+          )}
         </div>
       </div>
     </aside>

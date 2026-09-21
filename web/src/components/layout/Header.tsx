@@ -1,22 +1,18 @@
-import type { EngineStatus, Store, LicenseStatus } from '../../types'
+import type { EngineStatus, Store } from '../../types'
 import { StoreSwitcher } from './StoreSwitcher'
 import { WindowControls } from './WindowControls'
 import { WindowsControls } from './WindowsControls'
 import { Button } from '../ui/button'
 import { Badge } from '../ui/badge'
-import { Play, Pause, Square, Moon, Sun, KeyRound } from 'lucide-react'
+import { Play, Pause, Square, Sparkles } from 'lucide-react'
 import { formatMinutesSeconds } from '../../lib/countdown'
 
 interface HeaderProps {
   version: string
   status: EngineStatus
-  licenseStatus?: LicenseStatus | null
-  onOpenLicense?: () => void
   onStartReprice: () => void
   onPauseReprice: () => void
   onStopReprice: () => void
-  darkMode: boolean
-  onToggleDarkMode: () => void
   loadingAction: boolean
   stores?: Store[]
   currentStoreId?: string
@@ -24,18 +20,16 @@ interface HeaderProps {
   onOpenAddStore?: () => void
   onStartAllReprice?: () => void
   onStopAllReprice?: () => void
+  updateInfo?: import('../../types').UpdateInfo | null
+  onOpenUpdate?: () => void
 }
 
 export const Header: React.FC<HeaderProps> = ({
   version,
   status,
-  licenseStatus,
-  onOpenLicense,
   onStartReprice,
   onPauseReprice,
   onStopReprice,
-  darkMode,
-  onToggleDarkMode,
   loadingAction,
   stores = [],
   currentStoreId = '',
@@ -43,6 +37,8 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenAddStore,
   onStartAllReprice,
   onStopAllReprice,
+  updateInfo,
+  onOpenUpdate,
 }) => {
 
   const handleDoubleClick = () => {
@@ -72,31 +68,25 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
           <div className="flex items-center gap-2 min-w-0">
             <h1 className="font-semibold text-sm text-foreground tracking-tight hidden md:inline truncate">
-              Takealot 智能电商自动化中台
+              Takealot 掌柜
             </h1>
-            <Badge variant="secondary" className="hidden lg:inline-flex text-[10px] font-mono px-1.5 h-4.5 shrink-0">
+            <Badge
+              variant="secondary"
+              onClick={onOpenUpdate}
+              className="hidden lg:inline-flex text-[10px] font-mono px-1.5 h-4.5 shrink-0 cursor-pointer hover:bg-muted/80 transition-colors"
+              title="点击查看更新"
+            >
               v{version}
             </Badge>
-
-            {/* License Status Badge Button */}
-            {licenseStatus && onOpenLicense && (
+            {updateInfo?.has_update && (
               <button
                 type="button"
-                onClick={onOpenLicense}
-                className="inline-flex items-center transition-transform active:scale-95 focus:outline-hidden shrink-0"
-                title="点击查看授权详情或激活"
+                onClick={onOpenUpdate}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 transition-all cursor-pointer animate-pulse shrink-0"
+                title="发现新版本，点击查看并更新"
               >
-                {licenseStatus.activated && !licenseStatus.expired ? (
-                  <Badge variant="success" className="text-[10px] px-1.5 h-4.5 cursor-pointer gap-1 font-medium">
-                    <KeyRound className="w-2.5 h-2.5" />
-                    <span>{licenseStatus.expires_at === 0 ? '永久买断' : `已激活 (${licenseStatus.days_left ?? 0}天)`}</span>
-                  </Badge>
-                ) : (
-                  <Badge variant="destructive" className="text-[10px] px-1.5 h-4.5 cursor-pointer gap-1 font-medium animate-pulse">
-                    <KeyRound className="w-2.5 h-2.5" />
-                    <span>未激活</span>
-                  </Badge>
-                )}
+                <Sparkles className="h-3 w-3" />
+                <span>可更新 v{updateInfo.version}</span>
               </button>
             )}
           </div>
@@ -201,17 +191,6 @@ export const Header: React.FC<HeaderProps> = ({
                 </Button>
               </>
             )}
-
-            {/* Dark Mode Toggle */}
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={onToggleDarkMode}
-              className="h-8 w-8 text-muted-foreground hover:text-foreground"
-              title={darkMode ? '切换为明亮模式' : '切换为暗色模式'}
-            >
-              {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-            </Button>
           </div>
 
           {/* Windows-style Window Controls on the right */}

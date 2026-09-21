@@ -7,17 +7,23 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"errors"
 	"github.com/xuri/excelize/v2"
+	"net"
+	"net/url"
+	"takealot/pkg/account"
 	"takealot/pkg/api"
 	"takealot/pkg/config"
 	"takealot/pkg/db"
 	"takealot/pkg/engine"
-	"takealot/pkg/license"
+	"takealot/pkg/updater"
 )
 
 type Server struct {
@@ -25,20 +31,22 @@ type Server struct {
 	clientPool *api.ClientPool
 	eng        *engine.Engine
 	db         *db.DB
-	licMgr     *license.Manager
+	accountMgr *account.Manager
+	updaterMgr *updater.Manager
 	mux        *http.ServeMux
 	distFS     fs.FS
 	staticHTML []byte
 	version    string
 }
 
-func NewServer(cfgMgr *config.Manager, clientPool *api.ClientPool, eng *engine.Engine, database *db.DB, licMgr *license.Manager, distFS fs.FS, staticHTML []byte, version string) *Server {
+func NewServer(cfgMgr *config.Manager, clientPool *api.ClientPool, eng *engine.Engine, database *db.DB, accountMgr *account.Manager, updaterMgr *updater.Manager, distFS fs.FS, staticHTML []byte, version string) *Server {
 	s := &Server{
 		cfgMgr:     cfgMgr,
 		clientPool: clientPool,
 		eng:        eng,
 		db:         database,
-		licMgr:     licMgr,
+		accountMgr: accountMgr,
+		updaterMgr: updaterMgr,
 		mux:        http.NewServeMux(),
 		distFS:     distFS,
 		staticHTML: staticHTML,
@@ -87,33 +95,58 @@ func (s *Server) getStoreContext(r *http.Request) (*db.Store, *api.Client, error
 
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Store-Id, Authorization")
+		// Restrict local control API to this app's origins; do not expose the
+		// logged-in account to arbitrary websites or DNS rebinding hosts.
+		host := r.URL.Hostname()
+		if host == "" {
+			host = r.Host
+			if h, _, err := net.SplitHostPort(host); err == nil {
+				host = h
+			}
+		}
+		if host != "localhost" && host != "wails.localhost" && !net.ParseIP(host).IsLoopback() && host != "" {
+			jsonResponse(w, 403, map[string]string{"error": "不允许的本地访问地址"})
+			return
+		}
+		if origin := r.Header.Get("Origin"); origin != "" {
+			u, err := url.Parse(origin)
+			allowed := err == nil && ((u.Host == r.Host && (u.Scheme == "http" || u.Scheme == "https")) || origin == "wails://wails.localhost")
+			if !allowed {
+				jsonResponse(w, 403, map[string]string{"error": "不允许的请求来源"})
+				return
+			}
+		}
+		if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+			jsonResponse(w, 403, map[string]string{"error": "不允许跨站请求"})
+			return
+		}
 		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusOK)
+			w.WriteHeader(204)
 			return
 		}
 
 		path := r.URL.Path
 
-		// Always allow static files, SPA routing, version, and license endpoints
+		// Account access and stop operations remain available without VIP.
 		if !strings.HasPrefix(path, "/api/") ||
-			strings.HasPrefix(path, "/api/license/") ||
+			strings.HasPrefix(path, "/api/account/") || path == "/api/reprice/stop" || path == "/api/reprice/stop_all" || path == "/api/reprice/pause" ||
 			path == "/api/version" {
 			s.mux.ServeHTTP(w, r)
 			return
 		}
 
-		// Intercept business API calls when software is unactivated or expired
-		if s.licMgr != nil && !s.licMgr.IsValid() {
+		if s.accountMgr != nil && (path == "/api/reprice/start" || path == "/api/reprice/start_all" || path == "/api/follow/start") {
+			s.accountMgr.Refresh(r.Context())
+		}
+		// Enforce online membership for business APIs.
+		if s.accountMgr != nil && !s.accountMgr.IsValid() {
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-			w.WriteHeader(http.StatusPaymentRequired) // 402
+			w.WriteHeader(http.StatusForbidden) // 402
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"success": false,
-				"error":   "软件未激活或授权已过期，请先输入激活码",
-				"code":    "LICENSE_REQUIRED",
-				"license": s.licMgr.GetStatus(),
+				"error":   "请登录并开通有效 VIP 后使用",
+				"code":    "MEMBERSHIP_REQUIRED",
+				"account": s.accountMgr.GetStatus(),
 			})
 			return
 		}
@@ -125,8 +158,11 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) routes() {
 	s.mux.HandleFunc("/", s.handleIndex)
 	s.mux.HandleFunc("/api/version", s.handleVersion)
-	s.mux.HandleFunc("/api/license/status", s.handleLicenseStatus)
-	s.mux.HandleFunc("/api/license/activate", s.handleLicenseActivate)
+	s.mux.HandleFunc("/api/account/status", s.handleAccountStatus)
+	s.mux.HandleFunc("/api/account/login", s.handleAccountLogin)
+	s.mux.HandleFunc("/api/account/register", s.handleAccountRegister)
+	s.mux.HandleFunc("/api/account/logout", s.handleAccountLogout)
+	s.mux.HandleFunc("/api/account/refresh", s.handleAccountRefresh)
 	s.mux.HandleFunc("/api/config", s.handleConfig)
 	s.mux.HandleFunc("/api/test_auth", s.handleTestAuth)
 	s.mux.HandleFunc("/api/offers", s.handleOffers)
@@ -177,6 +213,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/fulfillment/bookings/create", s.handleBookingCreate)
 	s.mux.HandleFunc("/api/fulfillment/bookings/status", s.handleBookingStatus)
 	s.mux.HandleFunc("/api/fulfillment/bookings/delete", s.handleBookingDelete)
+
+	// Automatic Updater endpoints
+	s.mux.HandleFunc("/api/updater/check", s.handleUpdaterCheck)
+	s.mux.HandleFunc("/api/updater/apply", s.handleUpdaterApply)
+	s.mux.HandleFunc("/api/updater/progress", s.handleUpdaterProgress)
+
+	// Open external URL in system browser
+	s.mux.HandleFunc("/api/open_browser", s.handleOpenBrowser)
 }
 
 func jsonResponse(w http.ResponseWriter, status int, data any) {
@@ -222,56 +266,188 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleLicenseStatus(w http.ResponseWriter, r *http.Request) {
-	if s.licMgr == nil {
-		jsonResponse(w, http.StatusOK, map[string]any{
-			"activated":  true,
-			"machine_id": "UNKNOWN",
-			"message":    "未启用授权模块",
-		})
+func (s *Server) handleUpdaterCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
-	jsonResponse(w, http.StatusOK, s.licMgr.GetStatus())
+	if s.updaterMgr == nil {
+		jsonResponse(w, http.StatusServiceUnavailable, map[string]string{"error": "更新服务未就绪"})
+		return
+	}
+	force := r.URL.Query().Get("force") == "true"
+	info, err := s.updaterMgr.CheckForUpdate(force)
+	if err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	jsonResponse(w, http.StatusOK, info)
 }
 
-func (s *Server) handleLicenseActivate(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleUpdaterApply(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		jsonResponse(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
-
-	if s.licMgr == nil {
-		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "未启用授权模块"})
+	if s.updaterMgr == nil {
+		jsonResponse(w, http.StatusServiceUnavailable, map[string]string{"error": "更新服务未就绪"})
 		return
 	}
-
-	var req struct {
-		LicenseKey string `json:"license_key"`
+	var req updater.ApplyRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "请求参数解析失败"})
+	if err := s.updaterMgr.StartApply(req.DownloadURL, req.Proxy); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-
-	req.LicenseKey = strings.TrimSpace(req.LicenseKey)
-	if req.LicenseKey == "" {
-		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "激活码不能为空"})
-		return
-	}
-
-	if err := s.licMgr.Activate(req.LicenseKey); err != nil {
-		jsonResponse(w, http.StatusBadRequest, map[string]any{
-			"success": false,
-			"error":   err.Error(),
-		})
-		return
-	}
-
 	jsonResponse(w, http.StatusOK, map[string]any{
 		"success": true,
-		"message": "恭喜，软件激活成功！",
-		"license": s.licMgr.GetStatus(),
+		"message": "更新流程已启动，正在后台下载...",
 	})
+}
+
+func (s *Server) handleUpdaterProgress(w http.ResponseWriter, r *http.Request) {
+	if s.updaterMgr == nil {
+		jsonResponse(w, http.StatusServiceUnavailable, map[string]string{"error": "更新服务未就绪"})
+		return
+	}
+	jsonResponse(w, http.StatusOK, s.updaterMgr.GetProgress())
+}
+
+func (s *Server) handleOpenBrowser(w http.ResponseWriter, r *http.Request) {
+	targetURL := strings.TrimSpace(r.URL.Query().Get("url"))
+	if targetURL == "" {
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "url is required"})
+		return
+	}
+	openSystemBrowser(targetURL)
+	jsonResponse(w, http.StatusOK, map[string]bool{"success": true})
+}
+
+func openSystemBrowser(targetURL string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", targetURL)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", targetURL)
+	case "linux":
+		cmd = exec.Command("xdg-open", targetURL)
+	default:
+		return
+	}
+	_ = cmd.Start()
+}
+
+func (s *Server) accountReady(w http.ResponseWriter, r *http.Request, method string) bool {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method != method {
+		jsonResponse(w, 405, map[string]string{"error": "Method not allowed"})
+		return false
+	}
+	if s.accountMgr == nil {
+		jsonResponse(w, 503, map[string]string{"error": "会员服务未配置"})
+		return false
+	}
+	if method == "POST" && !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		jsonResponse(w, 415, map[string]string{"error": "Use application/json"})
+		return false
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 16384)
+	return true
+}
+func accountError(w http.ResponseWriter, err error) {
+	status := 503
+	code := "service_unavailable"
+	message := "会员服务暂时不可用"
+	var e *account.APIError
+	if errors.As(err, &e) {
+		status = e.Status
+		code = e.Code
+		message = e.Message
+	}
+	switch code {
+	case "session_limit_reached":
+		message = "登录会话已达上限，请在其他客户端退出，或联系管理员撤销旧会话"
+	case "invalid_credentials":
+		message = "账号或密码错误，或账号已停用"
+	case "account_conflict":
+		message = "用户名或邮箱已被使用"
+	case "rate_limited":
+		message = "操作过于频繁，请稍后重试"
+	case "invalid_input":
+		message = "请检查用户名、邮箱和密码格式"
+	}
+	jsonResponse(w, status, map[string]string{"error": message, "code": code})
+}
+func (s *Server) handleAccountStatus(w http.ResponseWriter, r *http.Request) {
+	if !s.accountReady(w, r, "GET") {
+		return
+	}
+	jsonResponse(w, 200, s.accountMgr.GetStatus())
+}
+func (s *Server) handleAccountRefresh(w http.ResponseWriter, r *http.Request) {
+	if !s.accountReady(w, r, "POST") {
+		return
+	}
+	state := s.accountMgr.Refresh(r.Context())
+	if !state.Eligible {
+		s.eng.StopAll()
+	}
+	jsonResponse(w, 200, state)
+}
+func (s *Server) handleAccountLogin(w http.ResponseWriter, r *http.Request) {
+	if !s.accountReady(w, r, "POST") {
+		return
+	}
+	var in struct {
+		Identifier string `json:"identifier"`
+		Password   string `json:"password"`
+	}
+	if json.NewDecoder(r.Body).Decode(&in) != nil {
+		jsonResponse(w, 400, map[string]string{"error": "请求格式错误"})
+		return
+	}
+	state, err := s.accountMgr.Login(r.Context(), strings.TrimSpace(in.Identifier), in.Password)
+	if err != nil {
+		accountError(w, err)
+		return
+	}
+	if !state.Eligible {
+		s.eng.StopAll()
+	}
+	jsonResponse(w, 200, state)
+}
+func (s *Server) handleAccountRegister(w http.ResponseWriter, r *http.Request) {
+	if !s.accountReady(w, r, "POST") {
+		return
+	}
+	var in struct {
+		Username string `json:"username"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if json.NewDecoder(r.Body).Decode(&in) != nil {
+		jsonResponse(w, 400, map[string]string{"error": "请求格式错误"})
+		return
+	}
+	if err := s.accountMgr.Register(r.Context(), in.Username, in.Email, in.Password); err != nil {
+		accountError(w, err)
+		return
+	}
+	jsonResponse(w, 201, map[string]bool{"ok": true})
+}
+func (s *Server) handleAccountLogout(w http.ResponseWriter, r *http.Request) {
+	if !s.accountReady(w, r, "POST") {
+		return
+	}
+	s.eng.StopAll()
+	if err := s.accountMgr.Logout(r.Context()); err != nil {
+		accountError(w, err)
+		return
+	}
+	jsonResponse(w, 200, s.accountMgr.GetStatus())
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -2255,7 +2431,6 @@ func (s *Server) handleBookingDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonResponse(w, http.StatusOK, map[string]any{"success": true})
 }
-
 
 // ----------------------------------------------------
 // 多店铺管理 (Stores Management Handlers)

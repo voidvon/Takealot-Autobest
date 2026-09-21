@@ -51,15 +51,15 @@ type StoreWorker struct {
 	storeName     string
 }
 
-type LicenseChecker interface {
+type MembershipChecker interface {
 	IsValid() bool
 }
 
 type Engine struct {
-	cfgMgr     *config.Manager
-	clientPool *api.ClientPool
-	db         *db.DB
-	licChecker LicenseChecker
+	cfgMgr            *config.Manager
+	clientPool        *api.ClientPool
+	db                *db.DB
+	membershipChecker MembershipChecker
 
 	workerMu sync.RWMutex
 	workers  map[string]*StoreWorker
@@ -69,15 +69,15 @@ type Engine struct {
 	subscribers map[chan LogEntry]struct{}
 }
 
-func NewEngine(cfgMgr *config.Manager, clientPool *api.ClientPool, database *db.DB, licChecker LicenseChecker) *Engine {
+func NewEngine(cfgMgr *config.Manager, clientPool *api.ClientPool, database *db.DB, membershipChecker MembershipChecker) *Engine {
 	return &Engine{
-		cfgMgr:      cfgMgr,
-		clientPool:  clientPool,
-		db:          database,
-		licChecker:  licChecker,
-		workers:     make(map[string]*StoreWorker),
-		logs:        make([]LogEntry, 0, 500),
-		subscribers: make(map[chan LogEntry]struct{}),
+		cfgMgr:            cfgMgr,
+		clientPool:        clientPool,
+		db:                database,
+		membershipChecker: membershipChecker,
+		workers:           make(map[string]*StoreWorker),
+		logs:              make([]LogEntry, 0, 500),
+		subscribers:       make(map[chan LogEntry]struct{}),
 	}
 }
 
@@ -159,9 +159,9 @@ func (e *Engine) GetRecentLogs() []LogEntry {
 }
 
 func (e *Engine) StartReprice(storeID string) (bool, string) {
-	if e.licChecker != nil && !e.licChecker.IsValid() {
-		e.Log("❌ 启动失败: 软件未激活或授权已过期，请前往控制面板激活", "ERROR", storeID, "")
-		return false, "软件未激活或授权已过期，请前往控制面板激活"
+	if e.membershipChecker != nil && !e.membershipChecker.IsValid() {
+		e.Log("❌ 启动失败: 未登录、VIP 已失效或无法在线验证，请检查会员账号", "ERROR", storeID, "")
+		return false, "未登录、VIP 已失效或无法在线验证，请检查会员账号"
 	}
 
 	w := e.getOrCreateWorker(storeID)
@@ -223,9 +223,9 @@ func (e *Engine) StopReprice(storeID string) (bool, string) {
 }
 
 func (e *Engine) StartAll() []string {
-	if e.licChecker != nil && !e.licChecker.IsValid() {
-		e.Log("❌ 启动失败: 软件未激活或授权已过期，请前往控制面板激活", "ERROR", "", "")
-		return []string{"软件未激活或授权已过期，请前往控制面板激活"}
+	if e.membershipChecker != nil && !e.membershipChecker.IsValid() {
+		e.Log("❌ 启动失败: 未登录、VIP 已失效或无法在线验证，请检查会员账号", "ERROR", "", "")
+		return []string{"未登录、VIP 已失效或无法在线验证，请检查会员账号"}
 	}
 
 	var results []string
@@ -429,8 +429,8 @@ func (e *Engine) repriceLoop(ctx context.Context, w *StoreWorker) {
 			}
 		}
 
-		if e.licChecker != nil && !e.licChecker.IsValid() {
-			e.Log(fmt.Sprintf("⚠️ 店铺 [%s] 检测到软件授权失效或已到期，已自动停止调价任务", w.storeName), "ERROR", w.storeID, w.storeName)
+		if e.membershipChecker != nil && !e.membershipChecker.IsValid() {
+			e.Log(fmt.Sprintf("⚠️ 店铺 [%s] 检测到会员资格失效或无法在线验证，已自动停止调价任务", w.storeName), "ERROR", w.storeID, w.storeName)
 			e.StopReprice(w.storeID)
 			return
 		}
@@ -693,6 +693,9 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 
 		if newPrice > 0 && newPrice != curPrice {
 			rrp := int(float64(newPrice) * rrpRatio)
+			if e.membershipChecker != nil && !e.membershipChecker.IsValid() {
+				return
+			}
 			if err := apiClient.UpdateOfferPrice(offerID, newPrice, rrp); err == nil {
 				w.mu.Lock()
 				w.totalRepriced++
@@ -734,6 +737,9 @@ type FollowItem struct {
 }
 
 func (e *Engine) RunFollowBatch(storeID string, items []FollowItem) (bool, string) {
+	if e.membershipChecker != nil && !e.membershipChecker.IsValid() {
+		return false, "请登录并开通有效 VIP"
+	}
 	w := e.getOrCreateWorker(storeID)
 	w.mu.Lock()
 	if w.followRunning {
@@ -766,6 +772,10 @@ func (e *Engine) executeFollowBatch(w *StoreWorker, items []FollowItem) {
 	newTargets := make(map[string]config.Target)
 
 	for idx, item := range items {
+		if e.membershipChecker != nil && !e.membershipChecker.IsValid() {
+			e.Log("会员验证失效，已停止跟卖任务", "WARN", w.storeID, w.storeName)
+			return
+		}
 		urlOrPLID := strings.TrimSpace(item.URL)
 		minPrice := item.MinPrice
 
@@ -795,6 +805,9 @@ func (e *Engine) executeFollowBatch(w *StoreWorker, items []FollowItem) {
 
 		followedInPLID := 0
 		for _, mpv := range results {
+			if e.membershipChecker != nil && !e.membershipChecker.IsValid() {
+				return
+			}
 			hasOfferStr := fmt.Sprintf("%v", mpv.HasOffer)
 			if strings.ToLower(hasOfferStr) == "false" {
 				gtin := mpv.GTIN
@@ -811,6 +824,9 @@ func (e *Engine) executeFollowBatch(w *StoreWorker, items []FollowItem) {
 				}
 				rrp := int(float64(offerPrice) * 1.2)
 
+				if e.membershipChecker != nil && !e.membershipChecker.IsValid() {
+					return
+				}
 				if err := apiClient.CreateOffer(gtin, offerPrice, rrp, -1); err == nil {
 					followedInPLID++
 					successCount++

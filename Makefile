@@ -40,7 +40,7 @@ dev: build-frontend
 dev-server: build-frontend
 	@echo "🚀 正在以服务端模式启动开发..."
 	@lsof -ti :8000 | xargs kill -9 2>/dev/null || true
-	@go run -ldflags="-X main.Version=dev" . -server-only
+	@go run -ldflags="-X main.Version=dev -X main.BuildMode=development" . -server-only
 
 build-frontend:
 	@echo "🎨 正在构建现代化 Vite React 前端 (Base UI Nova 风格)..."
@@ -48,7 +48,7 @@ build-frontend:
 
 build: build-frontend
 	@echo "🔨 正在使用 Wails 构建本地原生桌面应用 (v$(VERSION))..."
-	@$(WAILS) build -s -clean -ldflags="-s -w -X main.Version=$(VERSION)"
+	@$(WAILS) build -s -clean -ldflags="-s -w -X main.Version=$(VERSION) -X main.BuildMode=production"
 	@rm -rf Takealot.app $(BINARY_NAME)
 	@cp -R build/bin/Takealot.app . 2>/dev/null || true
 	@cp build/bin/Takealot.app/Contents/MacOS/Takealot ./$(BINARY_NAME) 2>/dev/null || true
@@ -66,23 +66,23 @@ release: build-frontend
 	@mkdir -p $(DIST_DIR)
 	@echo "2. 开始跨平台编译与打包 (统一 ZIP 格式)..."
 	@echo "   -> [macOS] 编译 Apple Silicon (arm64) 原生桌面 App..."
-	@$(WAILS) build -platform darwin/arm64 -s -clean -ldflags="-s -w -X main.Version=$(VERSION)"
+	@$(WAILS) build -platform darwin/arm64 -s -clean -ldflags="-s -w -X main.Version=$(VERSION) -X main.BuildMode=production"
 	@cp -R build/bin/Takealot.app $(DIST_DIR)/Takealot.app
 	@cp -f "批量导入模板.xlsx" README.md $(DIST_DIR)/
 	@echo "   -> [macOS] 打包 macOS arm64 ZIP 压缩包..."
 	@cd $(DIST_DIR) && zip -q -r Takealot-v$(VERSION)-macOS-arm64.zip Takealot.app "批量导入模板.xlsx" README.md
 	@rm -rf $(DIST_DIR)/Takealot.app
 	@echo "   -> [Windows] 编译 x86_64 原生桌面程序 (无黑框 GUI) 与打包 ZIP..."
-	@$(WAILS) build -platform windows/amd64 -s -clean -ldflags="-s -w -X main.Version=$(VERSION)"
+	@$(WAILS) build -platform windows/amd64 -s -clean -ldflags="-s -w -X main.Version=$(VERSION) -X main.BuildMode=production"
 	@cp build/bin/Takealot.exe $(DIST_DIR)/Takealot.exe
 	@cd $(DIST_DIR) && zip -q -r Takealot-v$(VERSION)-windows-amd64.zip Takealot.exe "批量导入模板.xlsx" README.md
 	@rm -f $(DIST_DIR)/Takealot.exe
 	@echo "   -> [Linux] 编译 x86_64 纯服务端/CLI 二进制与打包 ZIP..."
-	@GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.Version=$(VERSION)" -o $(DIST_DIR)/takealot .
+	@GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.Version=$(VERSION) -X main.BuildMode=production" -o $(DIST_DIR)/takealot .
 	@cd $(DIST_DIR) && zip -q -r Takealot-v$(VERSION)-linux-amd64.zip takealot "批量导入模板.xlsx" README.md
 	@rm -f $(DIST_DIR)/takealot $(DIST_DIR)/"批量导入模板.xlsx" $(DIST_DIR)/README.md
 	@echo "3. 生成 Release Notes..."
-	@printf "## 🚀 %s 发布\n\n### ✨ 核心功能\n- **Wails 现代化原生桌面端**：彻底告别控制台黑框终端，原生窗口启动，内置现代化 Web 交互\n- **多店铺聚合管理**：支持多店铺快捷切换、各店铺独立配置与聚合数据看板\n- **软件授权与安全体系**：支持机器硬件指纹绑定、离线激活码验证与授权生命周期管理\n- **实时比价战况看板**：展示处于优先、失去优先、独家在售统计及竞品最优价差\n- **智能防亏底价保护**：支持按倍数批量计算与单品设置最低保护底价，守住利润底线\n- **全自动跟价引擎**：毫秒级多协程轮询，自动下调/回调商品售价\n- **变体批量跟卖**：支持上传 Excel 自动识别 TSIN/PLID 变体并上架\n- **双模运行能力**：双击即可启动沉浸式桌面 GUI，亦支持通过 \`--server-only\` 以纯后端服务模式运行\n\n### 📦 资产下载 (统一 ZIP 格式)\n- **macOS (Apple Silicon arm64)**：\`Takealot-v%s-macOS-arm64.zip\` (解压后双击 Takealot.app 即用，无黑框)\n- **Windows (x64)**：\`Takealot-v%s-windows-amd64.zip\` (解压后双击 Takealot.exe，纯原生桌面窗口无 cmd 黑框)\n- **Linux (x64)**：\`Takealot-v%s-linux-amd64.zip\` (解压运行，纯服务端/CLI)\n" "$(TAG)" "$(VERSION)" "$(VERSION)" "$(VERSION)" > $(DIST_DIR)/release_notes.md
+	@printf "## 🚀 %s 发布\n\n### ✨ 核心功能\n- **Wails 现代化原生桌面端**：彻底告别控制台黑框终端，原生窗口启动，内置现代化 Web 交互\n- **多店铺聚合管理**：支持多店铺快捷切换、各店铺独立配置与聚合数据看板\n- **软件授权与安全体系**：支持 GoCMS 注册登录、在线 VIP 校验和登录会话数量限制\n- **实时比价战况看板**：展示处于优先、失去优先、独家在售统计及竞品最优价差\n- **智能防亏底价保护**：支持按倍数批量计算与单品设置最低保护底价，守住利润底线\n- **全自动跟价引擎**：毫秒级多协程轮询，自动下调/回调商品售价\n- **变体批量跟卖**：支持上传 Excel 自动识别 TSIN/PLID 变体并上架\n- **双模运行能力**：双击即可启动沉浸式桌面 GUI，亦支持通过 \`--server-only\` 以纯后端服务模式运行\n\n### 📦 资产下载 (统一 ZIP 格式)\n- **macOS (Apple Silicon arm64)**：\`Takealot-v%s-macOS-arm64.zip\` (解压后双击 Takealot.app 即用，无黑框)\n- **Windows (x64)**：\`Takealot-v%s-windows-amd64.zip\` (解压后双击 Takealot.exe，纯原生桌面窗口无 cmd 黑框)\n- **Linux (x64)**：\`Takealot-v%s-linux-amd64.zip\` (解压运行，纯服务端/CLI)\n" "$(TAG)" "$(VERSION)" "$(VERSION)" "$(VERSION)" > $(DIST_DIR)/release_notes.md
 	@echo "4. 更新 VERSION 文件与 Git 提交..."
 	@echo $(VERSION) > VERSION
 	@git add VERSION scripts/ Makefile main.go app.go wails.json pkg/ web/ "批量导入模板.xlsx" .gitignore README.md 2>/dev/null || true

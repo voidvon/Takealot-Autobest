@@ -334,16 +334,39 @@ export interface BookingRecord {
   created_at: string
 }
 
-export interface LicenseStatus {
-  activated: boolean
-  machine_id: string
-  customer?: string
-  expires_at?: number
-  expires_at_formatted?: string
-  expired?: boolean
-  days_left?: number
-  max_stores?: number
-  message?: string
+export interface AccountStatus {
+  authenticated: boolean
+  eligible: boolean
+  state: string
+  message: string
+  user: { id: number; username: string; display_name: string } | null
+  expires_at: string | null
+  persistent: boolean
 }
+
+export interface UpdateInfo {
+  version: string
+  tag_name: string
+  title: string
+  release_notes: string
+  published_at: string
+  asset_url: string
+  asset_name: string
+  asset_size: number
+  html_url: string
+  has_update: boolean
+  current_version: string
+}
+
+export interface UpdateProgress {
+  status: 'idle' | 'checking' | 'downloading' | 'extracting' | 'ready' | 'restarting' | 'error'
+  percent: number
+  downloaded: number
+  total: number
+  speed: string
+  message: string
+  error?: string
+}
+
 
 

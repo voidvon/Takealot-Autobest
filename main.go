@@ -16,12 +16,14 @@ import (
 	"syscall"
 	"time"
 
+	"context"
+	"takealot/pkg/account"
 	"takealot/pkg/api"
 	"takealot/pkg/config"
 	"takealot/pkg/db"
 	"takealot/pkg/engine"
-	"takealot/pkg/license"
 	"takealot/pkg/server"
+	"takealot/pkg/updater"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -36,18 +38,43 @@ var distEmbedFS embed.FS
 //go:embed web/static/index.html
 var staticHTML []byte
 
-var Version = "0.2.0"
+var (
+	Version    = "0.2.0"
+	BuildMode  = "development" // "development" 或 "production" (构建时通过 ldflags 注入)
+	ProdCMSURL = "https://takealot.0122.vip"
+	DevCMSURL  = "http://127.0.0.1:18080"
+)
+
+func resolveDefaultCMSURL() string {
+	// 1. 最高优先级：环境变量显式指定完整 URL
+	if v := os.Getenv("TAKEALOT_GOCMS_URL"); v != "" {
+		return v
+	}
+	// 2. 次高优先级：环境变量显式指定运行模式 (如 TAKEALOT_ENV=production 或 dev)
+	mode := strings.ToLower(os.Getenv("TAKEALOT_ENV"))
+	if mode == "" {
+		mode = strings.ToLower(BuildMode)
+	}
+	if mode == "production" || mode == "prod" {
+		return ProdCMSURL
+	}
+	return DevCMSURL
+}
 
 func main() {
 	port := flag.Int("port", 8000, "Web 控制台监听端口")
 	serverOnly := flag.Bool("server-only", false, "以纯命令行/服务端模式运行 (不打开桌面 GUI)")
 	noOpen := flag.Bool("no-open", false, "服务端模式下启动后不自动打开浏览器")
+	cmsURL := flag.String("gocms-url", resolveDefaultCMSURL(), "GoCMS 会员服务地址")
+	memberGroup := flag.String("member-group", envDefault("TAKEALOT_MEMBER_GROUP", "takealot-vip"), "所需会员组标识")
 	flag.Parse()
 
 	setupWorkingDir()
+	updater.Cleanup()
 
 	log.Println("========================================================")
-	log.Printf("🚀 正在启动 Takealot 自动化控制中心 (v%s - Wails 跨平台桌面版)", Version)
+	log.Printf("🚀 正在启动 Takealot 掌柜 (v%s - Wails 跨平台桌面版)", Version)
+	log.Printf("🌐 运行环境: %s | 会员服务: %s", BuildMode, *cmsURL)
 	log.Println("========================================================")
 
 	// 1. Initialize SQLite Database & Migrate Legacy Data
@@ -104,25 +131,34 @@ func main() {
 		}
 	}
 
-	// 4. Initialize License Manager
-	licMgr := license.NewManager(database)
-	licStatus := licMgr.GetStatus()
-	if licStatus.Activated {
-		log.Printf("🔑 软件授权状态: 已激活 [客户: %s | 有效期: %s]", licStatus.Customer, licStatus.ExpiresAtFormatted)
-	} else {
-		log.Printf("⚠️ 软件授权状态: 未激活 (本机机器识别码: %s)", licStatus.MachineID)
-		log.Printf("💡 请在控制台输入激活码，或联系管理员获取离线授权")
+	// Online member authorization. No offline activation or machine fingerprint.
+	accountMgr, err := account.New(*cmsURL, *memberGroup)
+	if err != nil {
+		log.Fatal(err)
 	}
+	accountCtx, cancelAccount := context.WithCancel(context.Background())
+	defer cancelAccount()
 
 	// 5. Initialize Automation Engine
-	eng := engine.NewEngine(cfgMgr, clientPool, database, licMgr)
+	eng := engine.NewEngine(cfgMgr, clientPool, database, accountMgr)
 
-	// 6. Initialize HTTP Server & Handler
+	go accountMgr.Run(accountCtx, func() { eng.StopAll() })
+
+	// 6. Initialize Automatic Updater Manager
+	updaterMgr := updater.NewManager("voidvon", "Takealot-Autobest", Version, func() {
+		log.Println("🛑 收到更新重启指令，正在保存数据并停止后台服务...")
+		eng.StopAll()
+		if database != nil {
+			_ = database.Close()
+		}
+	})
+
+	// 7. Initialize HTTP Server & Handler
 	distSubFS, err := fs.Sub(distEmbedFS, "web/dist")
 	if err != nil {
 		log.Printf("⚠️ 提取前端静态文件失败: %v", err)
 	}
-	srv := server.NewServer(cfgMgr, clientPool, eng, database, licMgr, distSubFS, staticHTML, Version)
+	srv := server.NewServer(cfgMgr, clientPool, eng, database, accountMgr, updaterMgr, distSubFS, staticHTML, Version)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 	url := fmt.Sprintf("http://%s", addr)
@@ -160,14 +196,14 @@ func main() {
 	app := NewApp()
 
 	err = wails.Run(&options.App{
-		Title:             "Takealot 自动化控制中心",
-		Width:             1360,
-		Height:            860,
-		MinWidth:          1024,
-		MinHeight:         700,
-		Frameless:         runtime.GOOS == "windows",
-		CSSDragProperty:   "--wails-draggable",
-		CSSDragValue:      "drag",
+		Title:           "Takealot 掌柜",
+		Width:           1360,
+		Height:          860,
+		MinWidth:        1024,
+		MinHeight:       700,
+		Frameless:       runtime.GOOS == "windows",
+		CSSDragProperty: "--wails-draggable",
+		CSSDragValue:    "drag",
 		AssetServer: &assetserver.Options{
 			Assets:  distSubFS,
 			Handler: srv.Handler(),
@@ -185,9 +221,9 @@ func main() {
 			WindowIsTranslucent:  false,
 		},
 		Windows: &windows.Options{
-			WebviewIsTransparent:             false,
-			WindowIsTranslucent:              false,
-			DisableWindowIcon:                false,
+			WebviewIsTransparent:              false,
+			WindowIsTranslucent:               false,
+			DisableWindowIcon:                 false,
 			DisableFramelessWindowDecorations: false,
 		},
 	})
@@ -235,4 +271,11 @@ func setupWorkingDir() {
 		dir = filepath.Dir(filepath.Dir(filepath.Dir(dir)))
 	}
 	_ = os.Chdir(dir)
+}
+
+func envDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }

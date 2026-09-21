@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { api, getActiveStoreId, setActiveStoreId } from './api/client'
-import type { EngineStatus, Store, LicenseStatus } from './types'
+import type { EngineStatus, Store, AccountStatus, UpdateInfo } from './types'
 import { Header } from './components/layout/Header'
 import { Sidebar, type TabId } from './components/layout/Sidebar'
 import { DashboardTab } from './components/dashboard/DashboardTab'
@@ -10,7 +10,8 @@ import { SalesTab } from './components/sales/SalesTab'
 import { FollowTab } from './components/follow/FollowTab'
 import { SettingsTab } from './components/settings/SettingsTab'
 import { AddStoreModal } from './components/layout/AddStoreModal'
-import { LicenseModal } from './components/license/LicenseModal'
+import { AccountModal } from './components/account/AccountModal'
+import { UpdateModal } from './components/updater/UpdateModal'
 import { Toaster } from './components/ui/toaster'
 import { toast } from './components/ui/use-toast'
 
@@ -38,9 +39,13 @@ export const App: React.FC = () => {
   const [currentStoreId, setCurrentStoreId] = useState<string>(() => getActiveStoreId())
   const [isAddStoreOpen, setIsAddStoreOpen] = useState(false)
 
-  // License State
-  const [licenseStatus, setLicenseStatus] = useState<LicenseStatus | null>(null)
-  const [isLicenseModalOpen, setIsLicenseModalOpen] = useState(false)
+  // Account State
+  const [accountStatus, setAccountStatus] = useState<AccountStatus | null>(null)
+  const [isAccountModalOpen, setIsAccountModalOpen] = useState(false)
+
+  // Auto Updater State
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
+  const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false)
 
   const handleSelectTab = (tab: TabId) => {
     setActiveTabState(tab)
@@ -116,22 +121,25 @@ export const App: React.FC = () => {
     }
   }
 
-  // Load license status
-  const loadLicenseStatus = async () => {
+  // Load account status
+  const loadAccountStatus = async () => {
     try {
-      const res = await api.getLicenseStatus()
-      setLicenseStatus(res)
-      if (!res.activated || res.expired) {
-        setIsLicenseModalOpen(true)
+      const res = await api.getAccountStatus()
+      setAccountStatus(res)
+      if (!res.eligible) {
+        setIsAccountModalOpen(true)
       }
     } catch (err) {
-      console.error('Failed to load license status:', err)
+      console.error('Failed to load account status:', err)
     }
   }
 
-  // Fetch version & initial status & stores & license
+  // Fetch version & initial status & stores & account
   useEffect(() => {
-    loadLicenseStatus()
+    loadAccountStatus()
+    const accountTimer = setInterval(() => {
+      api.getAccountStatus().then(setAccountStatus).catch(() => setAccountStatus(null))
+    }, 5000)
 
     api.getVersion().then((res) => {
       if (res.version) setVersion(res.version)
@@ -142,7 +150,36 @@ export const App: React.FC = () => {
     api.getRepriceStatus().then((s) => {
       if (s) setStatus(s)
     }).catch(() => {})
+    return () => clearInterval(accountTimer)
   }, [])
+
+  // 检查版本更新
+  const checkForUpdate = async (manual = false) => {
+    try {
+      const res = await api.checkUpdate(manual)
+      setUpdateInfo(res)
+      if (res.has_update) {
+        setIsUpdateModalOpen(true)
+        if (manual) {
+          toast.info('发现新版本', `检测到新版本 ${res.tag_name}，可立即更新`)
+        }
+      } else if (manual) {
+        toast.success('已是最新版本', `当前版本 v${(res.current_version || version).replace(/^v/, '')} 已是官方最新版本`)
+      }
+    } catch (err: any) {
+      if (manual) {
+        toast.error('检查更新失败', err.message || '网络连接超时')
+      }
+    }
+  }
+
+  // 启动 2.5 秒后静默检查更新
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      checkForUpdate(false)
+    }, 2500)
+    return () => clearTimeout(timer)
+  }, [version])
 
   // When currentStoreId changes, refresh status
   useEffect(() => {
@@ -204,8 +241,8 @@ export const App: React.FC = () => {
 
   // Engine controls for active store
   const handleStartReprice = async () => {
-    if (!licenseStatus?.activated || licenseStatus?.expired) {
-      setIsLicenseModalOpen(true)
+    if (!accountStatus?.eligible) {
+      setIsAccountModalOpen(true)
       return
     }
 
@@ -266,25 +303,29 @@ export const App: React.FC = () => {
       {/* Global Toast Notification Viewport (Top Center) */}
       <Toaster />
 
-      {/* Top Header with Store Switcher & License Status */}
+      {/* Top Header with Store Switcher & Engine Actions */}
       <Header
         version={version}
         status={status}
-        licenseStatus={licenseStatus}
-        onOpenLicense={() => setIsLicenseModalOpen(true)}
         onStartReprice={handleStartReprice}
         onPauseReprice={handlePauseReprice}
         onStopReprice={handleStopReprice}
-        darkMode={darkMode}
-        onToggleDarkMode={() => setDarkMode(!darkMode)}
         loadingAction={loadingAction}
         stores={stores}
         currentStoreId={currentStoreId}
         onSelectStore={handleSelectStore}
         onOpenAddStore={() => setIsAddStoreOpen(true)}
+        updateInfo={updateInfo}
+        onOpenUpdate={() => {
+          if (updateInfo?.has_update) {
+            setIsUpdateModalOpen(true)
+          } else {
+            checkForUpdate(true)
+          }
+        }}
         onStartAllReprice={async () => {
-          if (!licenseStatus?.activated || licenseStatus?.expired) {
-            setIsLicenseModalOpen(true)
+          if (!accountStatus?.eligible) {
+            setIsAccountModalOpen(true)
             return
           }
           try {
@@ -311,6 +352,10 @@ export const App: React.FC = () => {
         <Sidebar
           activeTab={activeTab}
           onSelectTab={handleSelectTab}
+          accountStatus={accountStatus}
+          onOpenAccount={() => setIsAccountModalOpen(true)}
+          darkMode={darkMode}
+          onToggleDarkMode={() => setDarkMode(!darkMode)}
         />
 
         {/* Tab Content Area: keyed with currentStoreId so switching store resets and reloads views cleanly */}
@@ -338,22 +383,30 @@ export const App: React.FC = () => {
               onRefreshStores={loadStores}
               onSelectStore={handleSelectStore}
               onOpenAddStore={() => setIsAddStoreOpen(true)}
+              version={version}
+              updateInfo={updateInfo}
+              onOpenUpdate={() => setIsUpdateModalOpen(true)}
+              onCheckUpdate={() => checkForUpdate(true)}
             />
           )}
         </main>
       </div>
 
-      {/* Global License Modal */}
-      <LicenseModal
-        open={isLicenseModalOpen}
-        onOpenChange={setIsLicenseModalOpen}
-        status={licenseStatus}
-        onActivated={(newStatus) => {
-          setLicenseStatus(newStatus)
-          if (newStatus.activated && !newStatus.expired) {
+      {/* Global Account Modal */}
+      <AccountModal
+        open={isAccountModalOpen}
+        onOpenChange={setIsAccountModalOpen}
+        status={accountStatus}
+        onAuthenticated={(newStatus) => {
+          setAccountStatus(newStatus)
+          if (newStatus.eligible) {
             loadStores()
           }
         }}
+        version={version}
+        updateInfo={updateInfo}
+        onOpenUpdate={() => setIsUpdateModalOpen(true)}
+        onCheckUpdate={() => checkForUpdate(true)}
       />
 
       {/* Global Add Store Modal (accessible from any tab / StoreSwitcher) */}
@@ -364,6 +417,14 @@ export const App: React.FC = () => {
           await loadStores()
           handleSelectStore(newStore.id)
         }}
+      />
+
+      {/* Global Automatic Update Modal */}
+      <UpdateModal
+        open={isUpdateModalOpen}
+        onOpenChange={setIsUpdateModalOpen}
+        updateInfo={updateInfo}
+        currentVersion={version}
       />
     </div>
   )

@@ -27,3 +27,29 @@ export function formatDateTime(dateStr: string | undefined | null): string {
     return dateStr
   }
 }
+
+/**
+ * Open URL in the default system browser across Wails desktop GUI and Web modes
+ */
+export function openExternalURL(url: string) {
+  if (!url) return
+  const fullUrl = /^https?:\/\//i.test(url) ? url : `https://${url}`
+
+  // 1. Wails desktop runtime (runs in Wails GUI on macOS and Windows)
+  const rt = (window as any).runtime
+  if (typeof rt?.BrowserOpenURL === 'function') {
+    rt.BrowserOpenURL(fullUrl)
+    return
+  }
+
+  // 2. Call backend open_browser API to launch native system browser
+  fetch(`/api/open_browser?url=${encodeURIComponent(fullUrl)}`).catch(() => {})
+
+  // 3. Fallback for pure browser mode
+  try {
+    window.open(fullUrl, '_blank', 'noopener,noreferrer')
+  } catch {
+    // ignore
+  }
+}
+
