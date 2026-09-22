@@ -42,7 +42,7 @@ var (
 	Version    = "0.2.0"
 	BuildMode  = "development" // "development" 或 "production" (构建时通过 ldflags 注入)
 	ProdCMSURL = "https://takealot.0122.vip"
-	DevCMSURL  = "http://127.0.0.1:18080"
+	DevCMSURL  = "https://takealot.0122.vip"
 )
 
 func resolveDefaultCMSURL() string {

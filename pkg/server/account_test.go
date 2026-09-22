@@ -25,6 +25,8 @@ func TestAccountGateAndLocalOrigins(t *testing.T) {
 		{"GET", "/api/stores", "", 403},
 		{"POST", "/api/account/login", "https://evil.example", 403},
 		{"POST", "/api/account/login", "http://127.0.0.1:8000", 503},
+		{"POST", "/api/account/login", "wails://wails.localhost", 503},
+		{"POST", "/api/account/login", "wails://wails", 503},
 	} {
 		r := httptest.NewRequest(tc.method, "http://127.0.0.1:8000"+tc.path, strings.NewReader(`{"identifier":"alice","password":"secret"}`))
 		r.Header.Set("Content-Type", "application/json")
@@ -49,5 +51,25 @@ func TestAccountGateAndLocalOrigins(t *testing.T) {
 	srv.Handler().ServeHTTP(w, r)
 	if w.Code != 403 {
 		t.Fatal("DNS rebinding host allowed")
+	}
+
+	// Test macOS Wails host & origin
+	rMac := httptest.NewRequest(http.MethodGet, "/api/account/status", nil)
+	rMac.Host = "wails"
+	rMac.Header.Set("Origin", "wails://wails")
+	wMac := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(wMac, rMac)
+	if wMac.Code != 200 {
+		t.Fatalf("macOS Wails host rejected: %d %s", wMac.Code, wMac.Body.String())
+	}
+
+	// Test Windows Wails host & origin
+	rWin := httptest.NewRequest(http.MethodGet, "/api/account/status", nil)
+	rWin.Host = "wails.localhost"
+	rWin.Header.Set("Origin", "http://wails.localhost")
+	wWin := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(wWin, rWin)
+	if wWin.Code != 200 {
+		t.Fatalf("Windows Wails host rejected: %d %s", wWin.Code, wWin.Body.String())
 	}
 }

@@ -104,13 +104,13 @@ func (s *Server) Handler() http.Handler {
 				host = h
 			}
 		}
-		if host != "localhost" && host != "wails.localhost" && !net.ParseIP(host).IsLoopback() && host != "" {
+		if host != "localhost" && host != "wails.localhost" && host != "wails" && !net.ParseIP(host).IsLoopback() && host != "" {
 			jsonResponse(w, 403, map[string]string{"error": "不允许的本地访问地址"})
 			return
 		}
 		if origin := r.Header.Get("Origin"); origin != "" {
 			u, err := url.Parse(origin)
-			allowed := err == nil && ((u.Host == r.Host && (u.Scheme == "http" || u.Scheme == "https")) || origin == "wails://wails.localhost")
+			allowed := err == nil && ((u.Host == r.Host && (u.Scheme == "http" || u.Scheme == "https" || u.Scheme == "wails")) || origin == "wails://wails.localhost" || origin == "wails://wails")
 			if !allowed {
 				jsonResponse(w, 403, map[string]string{"error": "不允许的请求来源"})
 				return
