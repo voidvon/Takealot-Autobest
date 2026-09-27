@@ -39,6 +39,8 @@ export const App: React.FC = () => {
   const [currentStoreId, setCurrentStoreId] = useState<string>(() => getActiveStoreId())
   const [isAddStoreOpen, setIsAddStoreOpen] = useState(false)
 
+  const currentStore = stores.find((s) => s.id === currentStoreId) || stores[0]
+
   // Account State
   const [accountStatus, setAccountStatus] = useState<AccountStatus | null>(null)
   const [isAccountModalOpen, setIsAccountModalOpen] = useState(false)
@@ -368,9 +370,11 @@ export const App: React.FC = () => {
             />
           )}
 
-          {activeTab === 'repricer' && <RepricerTab />}
+          {activeTab === 'repricer' && (
+            <RepricerTab currentStore={currentStore} onRefreshStores={loadStores} />
+          )}
 
-          {activeTab === 'catalog' && <CatalogTab />}
+          {activeTab === 'catalog' && <CatalogTab currentStore={currentStore} />}
 
           {activeTab === 'sales' && <SalesTab />}
 

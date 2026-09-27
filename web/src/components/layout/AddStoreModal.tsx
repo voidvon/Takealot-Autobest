@@ -30,6 +30,7 @@ export const AddStoreModal: React.FC<AddStoreModalProps> = ({
     interval_minutes: 5,
     bulk_stock: 1,
     max_fetch_offers: 1000,
+    min_price_ratio: 2.0,
   })
 
   const [testingToken, setTestingToken] = useState(false)
@@ -55,6 +56,7 @@ export const AddStoreModal: React.FC<AddStoreModalProps> = ({
         interval_minutes: 5,
         bulk_stock: 1,
         max_fetch_offers: 1000,
+        min_price_ratio: 2.0,
       })
       setTestResult(null)
     }

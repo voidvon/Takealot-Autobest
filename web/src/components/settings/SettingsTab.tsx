@@ -65,6 +65,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
     interval_minutes: 5,
     bulk_stock: 1,
     max_fetch_offers: 1000,
+    min_price_ratio: 2.0,
   })
 
   const [savingStore, setSavingStore] = useState(false)
@@ -92,6 +93,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
     interval_minutes: 5,
     bulk_stock: 1,
     max_fetch_offers: 1000,
+    min_price_ratio: 2.0,
     targets: {},
   })
   const [savingActive, setSavingActive] = useState(false)
@@ -108,10 +110,11 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
         interval_minutes: currentStore.interval_minutes,
         bulk_stock: currentStore.bulk_stock,
         max_fetch_offers: currentStore.max_fetch_offers,
+        min_price_ratio: currentStore.min_price_ratio || 2.0,
         targets: {},
       })
     }
-  }, [currentStore?.id, currentStore?.authorization])
+  }, [currentStore?.id, currentStore?.authorization, currentStore?.min_price_ratio])
 
   const openAddModal = () => {
     if (onOpenAddStore) {
@@ -133,6 +136,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
       interval_minutes: store.interval_minutes,
       bulk_stock: store.bulk_stock,
       max_fetch_offers: store.max_fetch_offers,
+      min_price_ratio: store.min_price_ratio || 2.0,
     })
     setIsEditOpen(true)
   }
@@ -327,7 +331,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                     </div>
 
                     {/* Parameters Details */}
-                    <div className="grid grid-cols-3 gap-2 py-2 px-2.5 rounded-lg bg-muted/50 text-[11px]">
+                    <div className="grid grid-cols-4 gap-2 py-2 px-2.5 rounded-lg bg-muted/50 text-[11px]">
                       <div>
                         <span className="text-muted-foreground block text-[10px]">降/提步长</span>
                         <span className="font-semibold font-mono text-foreground">
@@ -338,6 +342,12 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                         <span className="text-muted-foreground block text-[10px]">建议零售价</span>
                         <span className="font-semibold font-mono text-foreground">
                           {store.rrp_percentage}%
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground block text-[10px]">底价折算</span>
+                        <span className="font-semibold font-mono text-foreground">
+                          {store.min_price_ratio || 2.0}倍
                         </span>
                       </div>
                       <div>
@@ -557,6 +567,23 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                     拉取自身有效在售商品的最大件数
                   </p>
                 </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-foreground">
+                    底价折算倍数 (除数)
+                  </label>
+                  <Input
+                    type="number"
+                    min="0.1"
+                    step="0.1"
+                    value={activeForm.min_price_ratio || 2.0}
+                    onChange={(e) => setActiveForm({ ...activeForm, min_price_ratio: parseFloat(e.target.value) || 2.0 })}
+                    className="text-xs font-mono"
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    手动修改售价时自动以此倍数计算底价 (如售价 R200 ÷ 2 = 底价 R100)
+                  </p>
+                </div>
               </div>
 
               <div className="flex items-center justify-end pt-3 border-t border-border/60">
@@ -684,7 +711,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
             />
           </div>
 
-          <div className="grid grid-cols-3 gap-3 pt-2">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2">
             <div className="space-y-1">
               <label className="text-[11px] text-muted-foreground">降价步长 (R)</label>
               <Input
@@ -712,6 +739,17 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                 min="1"
                 value={storeForm.interval_minutes || 5}
                 onChange={(e) => setStoreForm({ ...storeForm, interval_minutes: parseInt(e.target.value) || 5 })}
+                className="text-xs font-mono h-8"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[11px] text-muted-foreground">底价折算倍数</label>
+              <Input
+                type="number"
+                min="0.1"
+                step="0.1"
+                value={storeForm.min_price_ratio || 2.0}
+                onChange={(e) => setStoreForm({ ...storeForm, min_price_ratio: parseFloat(e.target.value) || 2.0 })}
                 className="text-xs font-mono h-8"
               />
             </div>

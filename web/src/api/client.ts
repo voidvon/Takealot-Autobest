@@ -157,6 +157,8 @@ export const api = {
       leadtime_days?: number
       status?: string
       store_id?: string
+      min_price?: number
+      target_key?: string
     },
     storeId?: string
   ) => {

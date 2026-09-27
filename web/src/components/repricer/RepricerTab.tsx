@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { api } from '../../api/client'
-import type { OfferViewModel, PriorityStatus, TargetConfig, RepriceHistoryRecord } from '../../types'
+import type { OfferViewModel, PriorityStatus, TargetConfig, RepriceHistoryRecord, Store } from '../../types'
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/card'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
@@ -27,7 +27,14 @@ import {
   Calculator,
 } from 'lucide-react'
 
-export const RepricerTab: React.FC = () => {
+export interface RepricerTabProps {
+  currentStore?: Store
+  onRefreshStores?: () => Promise<void>
+}
+
+export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefreshStores }) => {
+  const storeRatio = currentStore?.min_price_ratio && currentStore.min_price_ratio > 0 ? currentStore.min_price_ratio : 2.0
+
   const [activeSubTab, setActiveSubTab] = useState<'status' | 'logs'>('status')
   const [loading, setLoading] = useState(false)
   const [syncing, setSyncing] = useState(false)
@@ -57,6 +64,8 @@ export const RepricerTab: React.FC = () => {
     offer?: OfferViewModel
     newPrice?: number
     newRrp?: number
+    newMinPrice?: number
+    autoCalcMinPrice?: boolean
     saving?: boolean
   }>({ open: false })
 
@@ -190,13 +199,35 @@ export const RepricerTab: React.FC = () => {
     setEditOffer((prev) => ({ ...prev, saving: true }))
     try {
       // Find offer id if possible or use TSIN/API
-      const payload: any = { selling_price: editOffer.newPrice }
+      const payload: any = {
+        selling_price: editOffer.newPrice,
+        min_price: editOffer.newMinPrice,
+        target_key: editOffer.offer.key,
+      }
       if (editOffer.newRrp) payload.rrp = editOffer.newRrp
 
       // Call API with specific store_id
       const offerId = editOffer.offer.key.split('/')[0] // or use official offer update
       await api.updateOfficialOffer(offerId, payload, editOffer.offer.store_id)
-      toast.success('商品售价更新成功！')
+
+      // Update local offers state immediately
+      setOffers((prev) =>
+        prev.map((o) =>
+          o.key === editOffer.offer!.key
+            ? {
+                ...o,
+                selling_price: editOffer.newPrice!,
+                rrp: editOffer.newRrp || o.rrp,
+                min_price: editOffer.newMinPrice !== undefined ? editOffer.newMinPrice : o.min_price,
+              }
+            : o
+        )
+      )
+
+      toast.success(
+        '商品售价与防亏底价更新成功！',
+        `售价已更新为 R ${editOffer.newPrice}，防亏底价已同步更新为 R ${editOffer.newMinPrice || 0}`
+      )
       setEditOffer({ open: false })
       loadOffers()
     } catch (err: any) {
@@ -215,8 +246,14 @@ export const RepricerTab: React.FC = () => {
   // Batch min-price modal state
   const [batchMinPriceModalOpen, setBatchMinPriceModalOpen] = useState(false)
   const [batchPriceBase, setBatchPriceBase] = useState<'selling_price' | 'rrp'>('rrp')
-  const [batchRatio, setBatchRatio] = useState<number>(2)
+  const [batchRatio, setBatchRatio] = useState<number>(storeRatio)
   const [batchScope, setBatchScope] = useState<'all' | 'selected'>('all')
+
+  useEffect(() => {
+    if (storeRatio > 0) {
+      setBatchRatio(storeRatio)
+    }
+  }, [storeRatio])
 
   const targetOffers = useMemo(() => {
     if (batchScope === 'selected' && totalMonitored > 0) {
@@ -264,6 +301,13 @@ export const RepricerTab: React.FC = () => {
     if (updatedCount === 0) {
       toast.info(mode === 'empty_only' ? '所选范围内没有空白底价的商品，无需填充。' : '所选范围内没有可更新底价的有效商品。')
       return
+    }
+
+    // Also persist batchRatio to store configuration if changed
+    if (currentStore && batchRatio > 0 && batchRatio !== currentStore.min_price_ratio) {
+      api.updateStore({ id: currentStore.id, min_price_ratio: batchRatio }).then(() => {
+        if (onRefreshStores) onRefreshStores()
+      }).catch(console.error)
     }
 
     setOffers(updated)
@@ -692,14 +736,17 @@ export const RepricerTab: React.FC = () => {
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() =>
+                          onClick={() => {
+                            const calculatedMin = Math.max(1, Math.round(item.selling_price / storeRatio))
                             setEditOffer({
                               open: true,
                               offer: item,
                               newPrice: item.selling_price,
                               newRrp: item.rrp,
+                              newMinPrice: item.min_price && item.min_price > 0 ? item.min_price : calculatedMin,
+                              autoCalcMinPrice: true,
                             })
-                          }
+                          }}
                           className="h-8 px-2 text-xs gap-1"
                         >
                           <Edit3 className="h-3.5 w-3.5" />
@@ -888,7 +935,7 @@ export const RepricerTab: React.FC = () => {
       <Dialog
         open={editOffer.open}
         onClose={() => setEditOffer({ open: false })}
-        title="手动修改商品售价"
+        title="手动修改商品售价与防亏底价"
         description={editOffer.offer?.title}
       >
         <div className="space-y-4">
@@ -899,9 +946,19 @@ export const RepricerTab: React.FC = () => {
             <Input
               type="number"
               value={editOffer.newPrice || ''}
-              onChange={(e) =>
-                setEditOffer((prev) => ({ ...prev, newPrice: parseInt(e.target.value) || 0 }))
-              }
+              onChange={(e) => {
+                const val = parseInt(e.target.value) || 0
+                setEditOffer((prev) => {
+                  const autoCalc = prev.autoCalcMinPrice ?? true
+                  const calcMin = autoCalc ? Math.max(1, Math.round(val / storeRatio)) : prev.newMinPrice
+                  return {
+                    ...prev,
+                    newPrice: val,
+                    newMinPrice: calcMin,
+                  }
+                })
+              }}
+              placeholder="请输入新售价"
             />
           </div>
 
@@ -915,7 +972,58 @@ export const RepricerTab: React.FC = () => {
               onChange={(e) =>
                 setEditOffer((prev) => ({ ...prev, newRrp: parseInt(e.target.value) || 0 }))
               }
+              placeholder="请输入建议零售价"
             />
+          </div>
+
+          <div className="space-y-2 pt-2 border-t border-border">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                <span>防亏保护底价 Min Price (R)</span>
+                <span className="text-[11px] font-normal text-muted-foreground">
+                  (店铺折算倍数: {storeRatio}倍)
+                </span>
+              </label>
+              <label className="flex items-center gap-1.5 text-[11px] text-primary cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={editOffer.autoCalcMinPrice ?? true}
+                  onChange={(e) => {
+                    const checked = e.target.checked
+                    setEditOffer((prev) => ({
+                      ...prev,
+                      autoCalcMinPrice: checked,
+                      newMinPrice: checked && prev.newPrice ? Math.max(1, Math.round(prev.newPrice / storeRatio)) : prev.newMinPrice,
+                    }))
+                  }}
+                  className="rounded border-input text-primary focus:ring-primary h-3.5 w-3.5 cursor-pointer"
+                />
+                <span>随售价自动折算</span>
+              </label>
+            </div>
+
+            <Input
+              type="number"
+              value={editOffer.newMinPrice || ''}
+              onChange={(e) => {
+                const val = parseInt(e.target.value) || 0
+                setEditOffer((prev) => ({ ...prev, newMinPrice: val, autoCalcMinPrice: false }))
+              }}
+              placeholder="防亏底价"
+              className="font-mono text-xs"
+            />
+
+            <div className="text-[11px]">
+              {(editOffer.autoCalcMinPrice ?? true) ? (
+                <span className="text-blue-600 dark:text-blue-400">
+                  💡 联动计算已生效：售价 R {editOffer.newPrice || 0} ÷ {storeRatio}倍 ≈ <strong>R {editOffer.newMinPrice || 0}</strong>
+                </span>
+              ) : (
+                <span className="text-muted-foreground">
+                  ✏️ 当前为自定义底价模式（勾选右上角可恢复按 {storeRatio} 倍自动折算）
+                </span>
+              )}
+            </div>
           </div>
 
           <div className="flex justify-end gap-2 pt-3 border-t border-border">
@@ -928,7 +1036,7 @@ export const RepricerTab: React.FC = () => {
               onClick={handleEditPriceSubmit}
               loading={editOffer.saving}
             >
-              提交修改
+              提交修改并生效
             </Button>
           </div>
         </div>

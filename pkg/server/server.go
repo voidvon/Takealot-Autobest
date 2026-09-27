@@ -462,6 +462,11 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			cfg.IntervalMinutes = store.IntervalMinutes
 			cfg.BulkStock = store.BulkStock
 			cfg.MaxFetchOffers = store.MaxFetchOffers
+			if store.MinPriceRatio > 0 {
+				cfg.MinPriceRatio = store.MinPriceRatio
+			} else {
+				cfg.MinPriceRatio = 2.0
+			}
 			if s.db != nil {
 				cfg.Targets, _ = s.db.LoadStoreTargets(store.ID)
 			}
@@ -494,6 +499,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			}
 			if newCfg.MaxFetchOffers > 0 {
 				store.MaxFetchOffers = newCfg.MaxFetchOffers
+			}
+			if newCfg.MinPriceRatio > 0 {
+				store.MinPriceRatio = newCfg.MinPriceRatio
 			}
 			_ = s.db.SaveStore(*store)
 			if client != nil {
@@ -2275,6 +2283,8 @@ func (s *Server) handleOfferQuickUpdate(w http.ResponseWriter, r *http.Request) 
 		RRP           int     `json:"rrp"`
 		WeightKg      float64 `json:"weight_kg"`
 		LeadtimeStock int     `json:"leadtime_stock"`
+		MinPrice      *int    `json:"min_price,omitempty"`
+		TargetKey     string  `json:"target_key,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "Invalid body"})
@@ -2290,11 +2300,37 @@ func (s *Server) handleOfferQuickUpdate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	_, client, _ := s.getStoreContext(r)
+	store, client, _ := s.getStoreContext(r)
+	storeID := "default"
+	storeName := "默认店铺"
+	if store != nil {
+		storeID = store.ID
+		storeName = store.Name
+	}
+
 	// 1. 如果有改价
 	if req.SellingPrice > 0 {
 		if client != nil {
 			_ = client.UpdateOfferPrice(targetOfferID, req.SellingPrice, req.RRP)
+		}
+		if s.db != nil {
+			_ = s.db.UpdateCachedOfferPrice(storeID, targetOfferID, req.SellingPrice, req.RRP)
+		}
+	}
+
+	// 2. 如果有更新底价 (商家手动改价时联动更新防亏底价)
+	if req.MinPrice != nil && s.db != nil {
+		targetKey := strings.TrimSpace(req.TargetKey)
+		if targetKey == "" {
+			targetKey = s.db.FindTargetKeyByTSIN(storeID, targetOfferID)
+			if targetKey == "" {
+				targetKey = targetOfferID
+			}
+		}
+		if err := s.db.UpdateTargetMinPrice(storeID, targetKey, *req.MinPrice); err != nil {
+			s.eng.Log(fmt.Sprintf("⚠️ 更新底价失败 (TSIN: %s, Key: %s): %v", targetOfferID, targetKey, err), "WARN", storeID, storeName)
+		} else {
+			s.eng.Log(fmt.Sprintf("🛡️ 商品已更新防亏底价为 R%d (TSIN: %s)", *req.MinPrice, targetOfferID), "INFO", storeID, storeName)
 		}
 	}
 

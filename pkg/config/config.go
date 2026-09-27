@@ -28,6 +28,7 @@ type Config struct {
 	IntervalMinutes   int               `json:"interval_minutes"`
 	BulkStock         int               `json:"bulk_stock"`
 	MaxFetchOffers    int               `json:"max_fetch_offers"`
+	MinPriceRatio     float64           `json:"min_price_ratio"`
 	Targets           map[string]Target `json:"targets"`
 }
 
@@ -49,6 +50,7 @@ func NewManager(baseDir string) *Manager {
 			IntervalMinutes:   5,
 			BulkStock:         1,
 			MaxFetchOffers:    1000,
+			MinPriceRatio:     2.0,
 			Targets:           make(map[string]Target),
 		},
 	}

@@ -147,6 +147,7 @@ export interface Store {
   interval_minutes: number
   bulk_stock: number
   max_fetch_offers: number
+  min_price_ratio?: number
   proxy_url?: string
   created_at?: string
   updated_at?: string
@@ -187,6 +188,7 @@ export interface SystemConfig {
   interval_minutes: number
   bulk_stock: number
   max_fetch_offers: number
+  min_price_ratio?: number
   targets: Record<string, TargetConfig>
 }
 

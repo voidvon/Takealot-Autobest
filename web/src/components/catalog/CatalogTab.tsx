@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { api } from '../../api/client'
-import type { OfficialOfferItem } from '../../types'
+import type { OfficialOfferItem, Store } from '../../types'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../ui/card'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
@@ -35,7 +35,13 @@ import {
   Package,
 } from 'lucide-react'
 
-export const CatalogTab: React.FC = () => {
+export interface CatalogTabProps {
+  currentStore?: Store
+}
+
+export const CatalogTab: React.FC<CatalogTabProps> = ({ currentStore }) => {
+  const storeRatio = currentStore?.min_price_ratio && currentStore.min_price_ratio > 0 ? currentStore.min_price_ratio : 2.0
+
   const [loading, setLoading] = useState(false)
   const [offers, setOffers] = useState<OfficialOfferItem[]>([])
   const [total, setTotal] = useState(0)
@@ -62,6 +68,8 @@ export const CatalogTab: React.FC = () => {
     rrp?: number
     leadtimeDays?: number
     status?: string
+    newMinPrice?: number
+    autoCalcMinPrice?: boolean
     saving?: boolean
   }>({ open: false })
 
@@ -125,13 +133,22 @@ export const CatalogTab: React.FC = () => {
     if (!editOffer.item) return
     setEditOffer((prev) => ({ ...prev, saving: true }))
     try {
+      const targetKey = editOffer.item.product_label_number
+        ? `${editOffer.item.tsin_id}/${editOffer.item.product_label_number}`
+        : String(editOffer.item.tsin_id)
+
       await api.updateOfficialOffer(editOffer.item.offer_id, {
         selling_price: editOffer.sellingPrice,
         rrp: editOffer.rrp,
         leadtime_days: editOffer.leadtimeDays,
         status: editOffer.status,
+        min_price: editOffer.newMinPrice,
+        target_key: targetKey,
       })
-      toast.success('商品参数已更新生效！')
+      toast.success(
+        '商品参数与保底底价已更新生效！',
+        `售价: R ${editOffer.sellingPrice || 0}，防亏底价已同步更新为: R ${editOffer.newMinPrice || 0}`
+      )
       setEditOffer({ open: false })
       loadOffers(page)
     } catch (err: any) {
@@ -462,6 +479,8 @@ export const CatalogTab: React.FC = () => {
                                 rrp: item.rrp,
                                 leadtimeDays: item.leadtime_days,
                                 status: item.status,
+                                newMinPrice: Math.max(1, Math.round(item.selling_price / storeRatio)),
+                                autoCalcMinPrice: true,
                               })
                             }
                             title="修改售价与库存"
@@ -542,7 +561,18 @@ export const CatalogTab: React.FC = () => {
               <Input
                 type="number"
                 value={editOffer.sellingPrice ?? ''}
-                onChange={(e) => setEditOffer((prev) => ({ ...prev, sellingPrice: parseInt(e.target.value) || 0 }))}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value) || 0
+                  setEditOffer((prev) => {
+                    const autoCalc = prev.autoCalcMinPrice ?? true
+                    const calcMin = autoCalc ? Math.max(1, Math.round(val / storeRatio)) : prev.newMinPrice
+                    return {
+                      ...prev,
+                      sellingPrice: val,
+                      newMinPrice: calcMin,
+                    }
+                  })
+                }}
                 className="h-8 text-xs font-mono font-bold text-primary"
               />
             </div>
@@ -554,6 +584,57 @@ export const CatalogTab: React.FC = () => {
                 onChange={(e) => setEditOffer((prev) => ({ ...prev, rrp: parseInt(e.target.value) || 0 }))}
                 className="h-8 text-xs font-mono"
               />
+            </div>
+          </div>
+
+          {/* Min Price Protection */}
+          <div className="space-y-1.5 pt-2 border-t border-border">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-medium text-foreground flex items-center gap-1.5">
+                <span>防亏保护底价 Min Price (R)</span>
+                <span className="text-[11px] font-normal text-muted-foreground">
+                  (店铺折算倍数: {storeRatio}倍)
+                </span>
+              </label>
+              <label className="flex items-center gap-1.5 text-[11px] text-primary cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={editOffer.autoCalcMinPrice ?? true}
+                  onChange={(e) => {
+                    const checked = e.target.checked
+                    setEditOffer((prev) => ({
+                      ...prev,
+                      autoCalcMinPrice: checked,
+                      newMinPrice: checked && prev.sellingPrice ? Math.max(1, Math.round(prev.sellingPrice / storeRatio)) : prev.newMinPrice,
+                    }))
+                  }}
+                  className="rounded border-input text-primary focus:ring-primary h-3.5 w-3.5 cursor-pointer"
+                />
+                <span>随售价自动折算</span>
+              </label>
+            </div>
+
+            <Input
+              type="number"
+              value={editOffer.newMinPrice || ''}
+              onChange={(e) => {
+                const val = parseInt(e.target.value) || 0
+                setEditOffer((prev) => ({ ...prev, newMinPrice: val, autoCalcMinPrice: false }))
+              }}
+              placeholder="防亏底价"
+              className="h-8 font-mono text-xs"
+            />
+
+            <div className="text-[11px]">
+              {(editOffer.autoCalcMinPrice ?? true) ? (
+                <span className="text-blue-600 dark:text-blue-400">
+                  💡 联动计算已生效：售价 R {editOffer.sellingPrice || 0} ÷ {storeRatio}倍 ≈ <strong>R {editOffer.newMinPrice || 0}</strong>
+                </span>
+              ) : (
+                <span className="text-muted-foreground">
+                  ✏️ 当前为自定义底价模式（勾选右上角可恢复按 {storeRatio} 倍自动折算）
+                </span>
+              )}
             </div>
           </div>
 

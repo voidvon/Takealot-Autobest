@@ -25,6 +25,7 @@ type Store struct {
 	IntervalMinutes   int     `json:"interval_minutes"`
 	BulkStock         int     `json:"bulk_stock"`
 	MaxFetchOffers    int     `json:"max_fetch_offers"`
+	MinPriceRatio     float64 `json:"min_price_ratio"`
 	ProxyURL          string  `json:"proxy_url"`
 	CreatedAt         string  `json:"created_at"`
 	UpdatedAt         string  `json:"updated_at"`
@@ -233,6 +234,7 @@ func (d *DB) migrate() error {
 		interval_minutes INTEGER DEFAULT 5,
 		bulk_stock INTEGER DEFAULT 1,
 		max_fetch_offers INTEGER DEFAULT 1000,
+		min_price_ratio REAL DEFAULT 2.0,
 		proxy_url TEXT DEFAULT '',
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -452,6 +454,7 @@ func (d *DB) migrate() error {
 		`ALTER TABLE shipments ADD COLUMN store_id TEXT DEFAULT 'default';`,
 		`ALTER TABLE dc_bookings ADD COLUMN store_id TEXT DEFAULT 'default';`,
 		`ALTER TABLE cached_offers ADD COLUMN sku TEXT;`,
+		`ALTER TABLE stores ADD COLUMN min_price_ratio REAL DEFAULT 2.0;`,
 		`UPDATE shipment_items SET image_url = '' WHERE image_url LIKE '%covers_tsins%';`,
 	}
 	for _, m := range columnMigrations {
@@ -489,7 +492,7 @@ func (d *DB) GetStores() ([]Store, error) {
 
 	rows, err := d.conn.Query(`
 		SELECT id, name, authorization, is_active, price_decrease_step, price_increase_step,
-		       rrp_percentage, interval_minutes, bulk_stock, max_fetch_offers, COALESCE(proxy_url, ''),
+		       rrp_percentage, interval_minutes, bulk_stock, max_fetch_offers, COALESCE(min_price_ratio, 2.0), COALESCE(proxy_url, ''),
 		       datetime(created_at, 'localtime'), datetime(updated_at, 'localtime')
 		FROM stores ORDER BY created_at ASC
 	`)
@@ -503,10 +506,13 @@ func (d *DB) GetStores() ([]Store, error) {
 		var s Store
 		var activeInt int
 		if err := rows.Scan(&s.ID, &s.Name, &s.Authorization, &activeInt, &s.PriceDecreaseStep, &s.PriceIncreaseStep,
-			&s.RRPPercentage, &s.IntervalMinutes, &s.BulkStock, &s.MaxFetchOffers, &s.ProxyURL, &s.CreatedAt, &s.UpdatedAt); err != nil {
+			&s.RRPPercentage, &s.IntervalMinutes, &s.BulkStock, &s.MaxFetchOffers, &s.MinPriceRatio, &s.ProxyURL, &s.CreatedAt, &s.UpdatedAt); err != nil {
 			continue
 		}
 		s.IsActive = activeInt == 1
+		if s.MinPriceRatio <= 0 {
+			s.MinPriceRatio = 2.0
+		}
 		list = append(list, s)
 	}
 	return list, nil
@@ -522,7 +528,7 @@ func (d *DB) GetStore(id string) (*Store, error) {
 
 	row := d.conn.QueryRow(`
 		SELECT id, name, authorization, is_active, price_decrease_step, price_increase_step,
-		       rrp_percentage, interval_minutes, bulk_stock, max_fetch_offers, COALESCE(proxy_url, ''),
+		       rrp_percentage, interval_minutes, bulk_stock, max_fetch_offers, COALESCE(min_price_ratio, 2.0), COALESCE(proxy_url, ''),
 		       datetime(created_at, 'localtime'), datetime(updated_at, 'localtime')
 		FROM stores WHERE id = ?
 	`, id)
@@ -530,10 +536,13 @@ func (d *DB) GetStore(id string) (*Store, error) {
 	var s Store
 	var activeInt int
 	if err := row.Scan(&s.ID, &s.Name, &s.Authorization, &activeInt, &s.PriceDecreaseStep, &s.PriceIncreaseStep,
-		&s.RRPPercentage, &s.IntervalMinutes, &s.BulkStock, &s.MaxFetchOffers, &s.ProxyURL, &s.CreatedAt, &s.UpdatedAt); err != nil {
+		&s.RRPPercentage, &s.IntervalMinutes, &s.BulkStock, &s.MaxFetchOffers, &s.MinPriceRatio, &s.ProxyURL, &s.CreatedAt, &s.UpdatedAt); err != nil {
 		return nil, err
 	}
 	s.IsActive = activeInt == 1
+	if s.MinPriceRatio <= 0 {
+		s.MinPriceRatio = 2.0
+	}
 	return &s, nil
 }
 
@@ -565,6 +574,9 @@ func (d *DB) SaveStore(s Store) error {
 	if s.RRPPercentage < 100 {
 		s.RRPPercentage = 120.0
 	}
+	if s.MinPriceRatio <= 0 {
+		s.MinPriceRatio = 2.0
+	}
 
 	activeInt := 0
 	if s.IsActive {
@@ -574,8 +586,8 @@ func (d *DB) SaveStore(s Store) error {
 	_, err := d.conn.Exec(`
 		INSERT INTO stores (
 			id, name, authorization, is_active, price_decrease_step, price_increase_step,
-			rrp_percentage, interval_minutes, bulk_stock, max_fetch_offers, proxy_url, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'), datetime('now', 'localtime'))
+			rrp_percentage, interval_minutes, bulk_stock, max_fetch_offers, min_price_ratio, proxy_url, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'), datetime('now', 'localtime'))
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			authorization = excluded.authorization,
@@ -586,10 +598,11 @@ func (d *DB) SaveStore(s Store) error {
 			interval_minutes = excluded.interval_minutes,
 			bulk_stock = excluded.bulk_stock,
 			max_fetch_offers = excluded.max_fetch_offers,
+			min_price_ratio = excluded.min_price_ratio,
 			proxy_url = excluded.proxy_url,
 			updated_at = datetime('now', 'localtime')
 	`, s.ID, s.Name, s.Authorization, activeInt, s.PriceDecreaseStep, s.PriceIncreaseStep,
-		s.RRPPercentage, s.IntervalMinutes, s.BulkStock, s.MaxFetchOffers, s.ProxyURL)
+		s.RRPPercentage, s.IntervalMinutes, s.BulkStock, s.MaxFetchOffers, s.MinPriceRatio, s.ProxyURL)
 	return err
 }
 
@@ -684,18 +697,19 @@ func (d *DB) EnsureDefaultStore(defaultAuth string, defaultDecrease, defaultIncr
 		IntervalMinutes:   defaultInterval,
 		BulkStock:         defaultBulkStock,
 		MaxFetchOffers:    defaultMaxFetch,
+		MinPriceRatio:     2.0,
 		ProxyURL:          "",
 	}
 
 	_, err = d.conn.Exec(`
 		INSERT INTO stores (
 			id, name, authorization, is_active, price_decrease_step, price_increase_step,
-			rrp_percentage, interval_minutes, bulk_stock, max_fetch_offers, proxy_url, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'), datetime('now', 'localtime'))
+			rrp_percentage, interval_minutes, bulk_stock, max_fetch_offers, min_price_ratio, proxy_url, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'), datetime('now', 'localtime'))
 		ON CONFLICT(id) DO NOTHING
 	`, defaultStore.ID, defaultStore.Name, defaultStore.Authorization, 1,
 		defaultStore.PriceDecreaseStep, defaultStore.PriceIncreaseStep, defaultStore.RRPPercentage,
-		defaultStore.IntervalMinutes, defaultStore.BulkStock, defaultStore.MaxFetchOffers, defaultStore.ProxyURL)
+		defaultStore.IntervalMinutes, defaultStore.BulkStock, defaultStore.MaxFetchOffers, defaultStore.MinPriceRatio, defaultStore.ProxyURL)
 
 	if err != nil {
 		return nil, err
@@ -750,6 +764,25 @@ func (d *DB) SaveStoreTargets(storeID string, targets map[string]config.Target) 
 
 func (d *DB) SaveTargets(targets map[string]config.Target) error {
 	return d.SaveStoreTargets("default", targets)
+}
+
+// UpdateTargetMinPrice updates or inserts min_price in reprice_targets for a single target_key
+func (d *DB) UpdateTargetMinPrice(storeID, targetKey string, minPrice int) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if storeID == "" {
+		storeID = "default"
+	}
+
+	_, err := d.conn.Exec(`
+		INSERT INTO reprice_targets (store_id, target_key, selected, min_price, max_price, updated_at)
+		VALUES (?, ?, 0, ?, 0, CURRENT_TIMESTAMP)
+		ON CONFLICT(store_id, target_key) DO UPDATE SET
+			min_price = excluded.min_price,
+			updated_at = CURRENT_TIMESTAMP
+	`, storeID, targetKey, minPrice)
+	return err
 }
 
 func (d *DB) LoadStoreTargets(storeID string) (map[string]config.Target, error) {
@@ -1202,6 +1235,40 @@ func (d *DB) UpdateStoreSingleMPV(storeID, tsinID string, bestPrice, competing i
 
 func (d *DB) UpdateSingleMPV(tsinID string, bestPrice, competing int, priorityStatus string, priceDiff int) error {
 	return d.UpdateStoreSingleMPV("default", tsinID, bestPrice, competing, priorityStatus, priceDiff)
+}
+
+// UpdateCachedOfferPrice updates selling_price and optionally rrp in cached_offers
+func (d *DB) UpdateCachedOfferPrice(storeID, tsinOrKey string, sellingPrice, rrp int) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if storeID == "" {
+		storeID = "default"
+	}
+	prefix := tsinOrKey + "/%"
+	_, err := d.conn.Exec(`
+		UPDATE cached_offers
+		SET selling_price = ?,
+		    rrp = CASE WHEN ? > 0 THEN ? ELSE rrp END,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE (store_id = ? OR store_id = 'default')
+		  AND (tsin_id = ? OR target_key = ? OR target_key LIKE ?)
+	`, sellingPrice, rrp, rrp, storeID, tsinOrKey, tsinOrKey, prefix)
+	return err
+}
+
+// FindTargetKeyByTSIN attempts to find the target_key for a given tsin in cached_offers
+func (d *DB) FindTargetKeyByTSIN(storeID, tsin string) string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var targetKey string
+	_ = d.conn.QueryRow(`
+		SELECT target_key FROM cached_offers
+		WHERE (store_id = ? OR store_id = 'default') AND (tsin_id = ? OR target_key LIKE ?)
+		LIMIT 1
+	`, storeID, tsin, tsin+"/%").Scan(&targetKey)
+	return targetKey
 }
 
 func (d *DB) LoadStoreCachedOffers(storeID string) ([]CachedOffer, error) {

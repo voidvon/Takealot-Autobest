@@ -180,3 +180,67 @@ func TestStoreCRUDAndIsolation(t *testing.T) {
 		t.Errorf("删除最后一个店铺应当报错拦截")
 	}
 }
+
+func TestMinPriceRatioAndQuickUpdate(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "takealot_db_minprice_*")
+	if err != nil {
+		t.Fatalf("创建临时目录失败: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	dbPath := filepath.Join(tempDir, "minprice.db")
+	database, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("初始化数据库失败: %v", err)
+	}
+	defer database.Close()
+
+	// 1. Check default store MinPriceRatio is 2.0
+	defStore, err := database.EnsureDefaultStore("Key test_auth", 1, 1, 5, 1, 1000, 120.0)
+	if err != nil {
+		t.Fatalf("EnsureDefaultStore 失败: %v", err)
+	}
+	if defStore.MinPriceRatio != 2.0 {
+		t.Errorf("期望默认店铺底价折算倍数为 2.0，实际: %f", defStore.MinPriceRatio)
+	}
+
+	// 2. Update store MinPriceRatio to 2.5
+	defStore.MinPriceRatio = 2.5
+	if err := database.SaveStore(*defStore); err != nil {
+		t.Fatalf("SaveStore 失败: %v", err)
+	}
+	loaded, err := database.GetStore(defStore.ID)
+	if err != nil || loaded.MinPriceRatio != 2.5 {
+		t.Errorf("重新获取店铺未保存折算倍数: %+v", loaded)
+	}
+
+	// 3. Test UpdateTargetMinPrice
+	targetKey := "12345/67890"
+	if err := database.UpdateTargetMinPrice(defStore.ID, targetKey, 150); err != nil {
+		t.Fatalf("UpdateTargetMinPrice 失败: %v", err)
+	}
+	targets, err := database.LoadStoreTargets(defStore.ID)
+	if err != nil || targets[targetKey].MinPrice != 150 {
+		t.Errorf("底价未正确写入 reprice_targets: %+v", targets)
+	}
+
+	// 4. Test UpdateCachedOfferPrice and FindTargetKeyByTSIN
+	offers := []CachedOffer{
+		{Key: targetKey, TSINID: "12345", PLID: "67890", Title: "测试商品", SellingPrice: 300, RRP: 360},
+	}
+	_ = database.SaveStoreCachedOffers(defStore.ID, offers)
+
+	foundKey := database.FindTargetKeyByTSIN(defStore.ID, "12345")
+	if foundKey != targetKey {
+		t.Errorf("FindTargetKeyByTSIN 期望 %s，实际: %s", targetKey, foundKey)
+	}
+
+	// Update cached price
+	if err := database.UpdateCachedOfferPrice(defStore.ID, "12345", 350, 420); err != nil {
+		t.Fatalf("UpdateCachedOfferPrice 失败: %v", err)
+	}
+	cached, _ := database.LoadStoreCachedOffers(defStore.ID)
+	if len(cached) != 1 || cached[0].SellingPrice != 350 || cached[0].RRP != 420 {
+		t.Errorf("cached_offers 价格更新异常: %+v", cached)
+	}
+}
