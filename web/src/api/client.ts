@@ -102,7 +102,7 @@ export const api = {
 
   // Repricing Engine & Offers
   getOffers: (sync = false) =>
-    request<{ success: boolean; total: number; offers: OfferViewModel[]; source?: string }>(
+    request<{ success: boolean; total: number; offers: OfferViewModel[]; source?: string; auto_updated_min_count?: number }>(
       sync ? '/api/offers?sync=true' : '/api/offers'
     ),
   saveTargets: (targets: Record<string, TargetConfig>) =>

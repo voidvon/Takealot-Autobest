@@ -89,6 +89,14 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
       if (res.success && res.offers) {
         setOffers(res.offers)
         setHasChanges(false)
+        if (sync && res.auto_updated_min_count && res.auto_updated_min_count > 0) {
+          toast.success(
+            '同步完成，已自动刷新防亏底价',
+            `检测到平台后台零售价变动，已自动按折算倍数重新计算并更新了 ${res.auto_updated_min_count} 款商品的防亏底价！`
+          )
+        } else if (sync) {
+          toast.success('全量同步成功', `已成功从店铺同步 ${res.offers.length} 款商品数据`)
+        }
       }
     } catch (err: any) {
       toast.error('获取调价商品列表失败', err.message)

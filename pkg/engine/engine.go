@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -521,6 +522,17 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 	offerMap := make(map[string]api.OfferItem)
 	rawOffers, err := apiClient.GetAllOffers(maxFetch)
 	if err == nil && len(rawOffers) > 0 {
+		oldCached, _ := e.db.LoadStoreCachedOffers(w.storeID)
+		oldCachedMap := make(map[string]db.CachedOffer, len(oldCached))
+		for _, c := range oldCached {
+			oldCachedMap[c.TSINID] = c
+		}
+
+		storeRatio := store.MinPriceRatio
+		if storeRatio <= 0 {
+			storeRatio = 2.0
+		}
+
 		cachedItems := make([]db.CachedOffer, 0, len(rawOffers))
 		for _, o := range rawOffers {
 			tsinStr := strconv.FormatInt(o.TSINID, 10)
@@ -530,14 +542,42 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 			if sku == "" {
 				sku = o.SKU
 			}
+			curPlatformPrice := int(o.SellingPrice)
+			key := fmt.Sprintf("%s/%s", tsinStr, plidStr)
+
+			// 检查平台后台价格是否发生了外部变动 (例如商家在 Takealot 官方后台修改了价格)
+			if oldItem, exists := oldCachedMap[tsinStr]; exists && oldItem.SellingPrice > 0 && curPlatformPrice > 0 {
+				if curPlatformPrice != oldItem.SellingPrice {
+					// 校验：是否是调价引擎自身刚刚调整的目标价格
+					lastEnginePrice, hasEnginePrice := e.db.GetLatestRepricePrice(w.storeID, tsinStr)
+					if !hasEnginePrice || lastEnginePrice != curPlatformPrice {
+						// 确定为商家外部后台自主改价：自动按折算倍数刷新防亏底价
+						newMinPrice := int(math.Round(float64(curPlatformPrice) / storeRatio))
+						if newMinPrice <= 0 {
+							newMinPrice = 1
+						}
+						_ = e.db.UpdateTargetMinPrice(w.storeID, key, newMinPrice)
+						if tgt, ok := activeTargets[key]; ok {
+							tgt.MinPrice = newMinPrice
+							activeTargets[key] = tgt
+						} else if tgt, ok := activeTargets[tsinStr]; ok {
+							tgt.MinPrice = newMinPrice
+							activeTargets[tsinStr] = tgt
+						}
+						e.Log(fmt.Sprintf("🛡️ 检测到平台后台零售价外部变动 (TSIN: %s, 原价: R%d -> 现价: R%d)，已按 %.1f 倍自动更新防亏底价为 R%d",
+							tsinStr, oldItem.SellingPrice, curPlatformPrice, storeRatio, newMinPrice), "INFO", w.storeID, w.storeName)
+					}
+				}
+			}
+
 			cachedItems = append(cachedItems, db.CachedOffer{
 				StoreID:         w.storeID,
-				Key:             fmt.Sprintf("%s/%s", tsinStr, plidStr),
+				Key:             key,
 				TSINID:          tsinStr,
 				SKU:             sku,
 				PLID:            plidStr,
 				Title:           o.TSIN.Title,
-				SellingPrice:    int(o.SellingPrice),
+				SellingPrice:    curPlatformPrice,
 				RRP:             int(o.RRP),
 				Stock:           o.TotalMerchantStock,
 				DateModified:    o.DateModified,
@@ -709,6 +749,7 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 				}
 				_ = e.db.RecordStoreReprice(w.storeID, key, tsinID, sku, title, imageURL, w.storeName, actionType, curPrice, newPrice, bestPrice, actionDesc)
 				_ = e.db.UpdateStoreSingleMPV(w.storeID, tsinID, bestPrice, competing, "winning", 0)
+				_ = e.db.UpdateCachedOfferPrice(w.storeID, tsinID, newPrice, rrp)
 
 				e.Log(fmt.Sprintf("✅ [调价成功] %s... (TSIN:%s) | 原价: R%d -> 新价: R%d (RRP: R%d) | 原因: %s",
 					truncate(title, 22), tsinID, curPrice, newPrice, rrp, actionDesc), "SUCCESS", w.storeID, w.storeName)

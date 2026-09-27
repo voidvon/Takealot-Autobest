@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -701,18 +702,55 @@ func (s *Server) handleOffers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	oldCachedMap := make(map[string]db.CachedOffer)
+	if s.db != nil {
+		oldCached, _ := s.db.LoadStoreCachedOffers(store.ID)
+		for _, c := range oldCached {
+			oldCachedMap[c.TSINID] = c
+		}
+	}
+
+	storeRatio := store.MinPriceRatio
+	if storeRatio <= 0 {
+		storeRatio = 2.0
+	}
+
+	autoUpdatedMinCount := 0
+
 	cachedItems := make([]db.CachedOffer, 0, len(rawOffers))
 	for _, item := range rawOffers {
 		tsinStr := strconv.FormatInt(item.TSINID, 10)
 		plidStr := api.AnyToString(item.TSIN.ProductlineID)
 		key := fmt.Sprintf("%s/%s", tsinStr, plidStr)
+		curPlatformPrice := int(item.SellingPrice)
+
+		// 检查平台后台价格是否发生了外部变动 (例如商家在 Takealot 官方后台修改了价格)
+		if oldItem, exists := oldCachedMap[tsinStr]; exists && oldItem.SellingPrice > 0 && curPlatformPrice > 0 {
+			if curPlatformPrice != oldItem.SellingPrice {
+				// 校验：是否是调价引擎自身刚刚调整的目标价格
+				lastEnginePrice, hasEnginePrice := s.db.GetLatestRepricePrice(store.ID, tsinStr)
+				if !hasEnginePrice || lastEnginePrice != curPlatformPrice {
+					// 确定为商家外部后台自主改价：自动按折算倍数刷新防亏底价
+					newMinPrice := int(math.Round(float64(curPlatformPrice) / storeRatio))
+					if newMinPrice <= 0 {
+						newMinPrice = 1
+					}
+					_ = s.db.UpdateTargetMinPrice(store.ID, key, newMinPrice)
+					autoUpdatedMinCount++
+					if s.eng != nil {
+						s.eng.Log(fmt.Sprintf("🛡️ 同步检测到平台后台零售价外部变动 (TSIN: %s, 原价: R%d -> 现价: R%d)，已按 %.1f 倍自动更新防亏底价为 R%d",
+							tsinStr, oldItem.SellingPrice, curPlatformPrice, storeRatio, newMinPrice), "INFO", store.ID, store.Name)
+					}
+				}
+			}
+		}
 
 		cachedItems = append(cachedItems, db.CachedOffer{
 			Key:             key,
 			TSINID:          tsinStr,
 			PLID:            plidStr,
 			Title:           item.TSIN.Title,
-			SellingPrice:    int(item.SellingPrice),
+			SellingPrice:    curPlatformPrice,
 			RRP:             int(item.RRP),
 			Stock:           item.TotalMerchantStock,
 			DateModified:    item.DateModified,
@@ -728,6 +766,8 @@ func (s *Server) handleOffers(w http.ResponseWriter, r *http.Request) {
 	// 持久化到 SQLite（内部自动保留已有的竞品价格）
 	if s.db != nil {
 		_ = s.db.SaveStoreCachedOffers(store.ID, cachedItems)
+		// 重新加载 targets 以确保包含刚才自动更新的底价
+		targets, _ = s.db.LoadStoreTargets(store.ID)
 	}
 
 	// 从本地 SQLite 重载并组装返回，保证数据完整性
@@ -737,6 +777,9 @@ func (s *Server) handleOffers(w http.ResponseWriter, r *http.Request) {
 			parsed = make([]OfferViewModel, 0, len(reloaded))
 			for _, c := range reloaded {
 				targetInfo := targets[c.Key]
+				if targetInfo.MinPrice == 0 && targets[c.TSINID].MinPrice > 0 {
+					targetInfo = targets[c.TSINID]
+				}
 				parsed = append(parsed, OfferViewModel{
 					Key:             c.Key,
 					TSINID:          c.TSINID,
@@ -763,10 +806,11 @@ func (s *Server) handleOffers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]any{
-		"success": true,
-		"total":   len(parsed),
-		"offers":  parsed,
-		"source":  "live_sync",
+		"success":                true,
+		"total":                  len(parsed),
+		"offers":                 parsed,
+		"source":                 "live_sync",
+		"auto_updated_min_count": autoUpdatedMinCount,
 	})
 }
 
@@ -1223,6 +1267,8 @@ func (s *Server) handleOfficialOfferUpdate(w http.ResponseWriter, r *http.Reques
 		RRP          *int           `json:"rrp,omitempty"`
 		LeadtimeDays *int           `json:"leadtime_days,omitempty"`
 		Status       *string        `json:"status,omitempty"`
+		MinPrice     *int           `json:"min_price,omitempty"`
+		TargetKey    string         `json:"target_key,omitempty"`
 		Extra        map[string]any `json:"extra,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1250,9 +1296,10 @@ func (s *Server) handleOfficialOfferUpdate(w http.ResponseWriter, r *http.Reques
 		payload[k] = v
 	}
 
-	_, client, cErr := s.getStoreContext(r)
+	store, client, cErr := s.getStoreContext(r)
 	if (cErr != nil || client == nil) && req.StoreID != "" {
 		if st, sErr := s.db.GetStore(req.StoreID); sErr == nil && st != nil {
+			store = st
 			client = s.clientPool.GetOrCreate(st.ID, st.Authorization, st.ProxyURL)
 			cErr = nil
 		}
@@ -1265,6 +1312,40 @@ func (s *Server) handleOfficialOfferUpdate(w http.ResponseWriter, r *http.Reques
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"success": false, "error": err.Error()})
 		return
 	}
+
+	targetStoreID := "default"
+	targetStoreName := "默认店铺"
+	if store != nil {
+		targetStoreID = store.ID
+		targetStoreName = store.Name
+	}
+	if req.StoreID != "" {
+		targetStoreID = req.StoreID
+	}
+
+	if req.SellingPrice != nil && s.db != nil {
+		rrpVal := 0
+		if req.RRP != nil {
+			rrpVal = *req.RRP
+		}
+		_ = s.db.UpdateCachedOfferPrice(targetStoreID, req.OfferID, *req.SellingPrice, rrpVal)
+	}
+
+	if req.MinPrice != nil && s.db != nil {
+		targetKey := strings.TrimSpace(req.TargetKey)
+		if targetKey == "" {
+			targetKey = s.db.FindTargetKeyByTSIN(targetStoreID, req.OfferID)
+			if targetKey == "" {
+				targetKey = req.OfferID
+			}
+		}
+		if err := s.db.UpdateTargetMinPrice(targetStoreID, targetKey, *req.MinPrice); err != nil {
+			s.eng.Log(fmt.Sprintf("⚠️ 更新底价失败 (Offer: %s, Key: %s): %v", req.OfferID, targetKey, err), "WARN", targetStoreID, targetStoreName)
+		} else {
+			s.eng.Log(fmt.Sprintf("🛡️ 商品已更新防亏底价为 R%d (Offer: %s)", *req.MinPrice, req.OfferID), "INFO", targetStoreID, targetStoreName)
+		}
+	}
+
 	s.eng.Log(fmt.Sprintf("📝 已更新 Offer %s 参数", req.OfferID), "INFO")
 	jsonResponse(w, http.StatusOK, map[string]any{"success": true, "message": "商品参数更新成功"})
 }

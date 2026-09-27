@@ -775,7 +775,24 @@ func (d *DB) UpdateTargetMinPrice(storeID, targetKey string, minPrice int) error
 		storeID = "default"
 	}
 
-	_, err := d.conn.Exec(`
+	tsinPrefix := targetKey
+	if idx := strings.Index(targetKey, "/"); idx != -1 {
+		tsinPrefix = targetKey[:idx]
+	}
+
+	res, err := d.conn.Exec(`
+		UPDATE reprice_targets
+		SET min_price = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE store_id = ?
+		  AND (target_key = ? OR target_key = ? OR target_key LIKE ?)
+	`, minPrice, storeID, targetKey, tsinPrefix, tsinPrefix+"/%")
+	if err == nil {
+		if rows, _ := res.RowsAffected(); rows > 0 {
+			return nil
+		}
+	}
+
+	_, err = d.conn.Exec(`
 		INSERT INTO reprice_targets (store_id, target_key, selected, min_price, max_price, updated_at)
 		VALUES (?, ?, 0, ?, 0, CURRENT_TIMESTAMP)
 		ON CONFLICT(store_id, target_key) DO UPDATE SET
@@ -910,6 +927,24 @@ func (d *DB) RecordStoreReprice(storeID, targetKey, tsinID, sku, title, imageURL
 
 func (d *DB) RecordReprice(targetKey, tsinID, sku, title, imageURL, storeName, action string, oldPrice, newPrice, competitorPrice int, reason string) error {
 	return d.RecordStoreReprice("default", targetKey, tsinID, sku, title, imageURL, storeName, action, oldPrice, newPrice, competitorPrice, reason)
+}
+
+// GetLatestRepricePrice returns the latest new_price recorded in reprice_history for a given TSIN
+func (d *DB) GetLatestRepricePrice(storeID, tsinID string) (int, bool) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var newPrice int
+	err := d.conn.QueryRow(`
+		SELECT new_price FROM reprice_history
+		WHERE (store_id = ? OR store_id = 'default')
+		  AND (tsin_id = ? OR target_key = ? OR target_key LIKE ?)
+		ORDER BY created_at DESC, id DESC LIMIT 1
+	`, storeID, tsinID, tsinID, tsinID+"/%").Scan(&newPrice)
+	if err != nil {
+		return 0, false
+	}
+	return newPrice, true
 }
 
 func (d *DB) GetStoreRepriceHistory(storeID string, limit int) ([]RepriceHistoryRecord, error) {
