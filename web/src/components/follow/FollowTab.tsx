@@ -244,7 +244,14 @@ export const FollowTab: React.FC<FollowTabProps> = ({ onNavigateLogs }) => {
                 <input
                   type="file"
                   accept=".xlsx,.xls"
-                  onChange={(e) => e.target.files?.[0] && handleFileUpload(e.target.files[0])}
+                  onChange={(e) => {
+                    const file = e.currentTarget.files?.[0]
+                    // Reset the input so selecting the same file triggers change again.
+                    e.currentTarget.value = ''
+                    if (file) {
+                      void handleFileUpload(file)
+                    }
+                  }}
                   className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                   disabled={loading}
                 />
