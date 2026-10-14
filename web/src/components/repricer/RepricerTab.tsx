@@ -206,22 +206,25 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
     if (!editOffer.offer || !editOffer.newPrice) return
     setEditOffer((prev) => ({ ...prev, saving: true }))
     try {
-      // Find offer id if possible or use TSIN/API
-      const payload: any = {
-        selling_price: editOffer.newPrice,
+      const payload: Parameters<typeof api.updateOfficialOffer>[1] = {
+        tsin_id: editOffer.offer.tsin_id,
         min_price: editOffer.newMinPrice,
         target_key: editOffer.offer.key,
       }
-      if (editOffer.newRrp) payload.rrp = editOffer.newRrp
+      if (editOffer.newPrice !== editOffer.offer.selling_price) payload.selling_price = editOffer.newPrice
+      if (editOffer.newRrp && editOffer.newRrp !== editOffer.offer.rrp) {
+        payload.rrp = editOffer.newRrp
+        payload.selling_price = editOffer.newPrice
+      }
 
-      // Call API with specific store_id
-      const offerId = editOffer.offer.key.split('/')[0] // or use official offer update
-      await api.updateOfficialOffer(offerId, payload, editOffer.offer.store_id)
+      // The monitoring key contains TSIN/PLID, not the seller's Offer ID.
+      // Resolve the actual offer in the owning store before updating its price.
+      await api.updateOfficialOffer(undefined, payload, editOffer.offer.store_id)
 
       // Update local offers state immediately
       setOffers((prev) =>
         prev.map((o) =>
-          o.key === editOffer.offer!.key
+          o.key === editOffer.offer!.key && o.store_id === editOffer.offer!.store_id
             ? {
                 ...o,
                 selling_price: editOffer.newPrice!,

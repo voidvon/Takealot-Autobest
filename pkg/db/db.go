@@ -1286,7 +1286,7 @@ func (d *DB) UpdateCachedOfferPrice(storeID, tsinOrKey string, sellingPrice, rrp
 		SET selling_price = ?,
 		    rrp = CASE WHEN ? > 0 THEN ? ELSE rrp END,
 		    updated_at = CURRENT_TIMESTAMP
-		WHERE (store_id = ? OR store_id = 'default')
+		WHERE store_id = ?
 		  AND (tsin_id = ? OR target_key = ? OR target_key LIKE ?)
 	`, sellingPrice, rrp, rrp, storeID, tsinOrKey, tsinOrKey, prefix)
 	return err
@@ -1300,7 +1300,7 @@ func (d *DB) FindTargetKeyByTSIN(storeID, tsin string) string {
 	var targetKey string
 	_ = d.conn.QueryRow(`
 		SELECT target_key FROM cached_offers
-		WHERE (store_id = ? OR store_id = 'default') AND (tsin_id = ? OR target_key LIKE ?)
+		WHERE store_id = ? AND (tsin_id = ? OR target_key LIKE ?)
 		LIMIT 1
 	`, storeID, tsin, tsin+"/%").Scan(&targetKey)
 	return targetKey

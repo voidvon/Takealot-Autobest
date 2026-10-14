@@ -439,6 +439,26 @@ func (c *Client) GetAllOffers(maxItems int) ([]OfferItem, error) {
 	return allOffers, nil
 }
 
+// GetOfferIDByTSIN resolves a catalogue product to this seller's actual offer.
+// A TSIN is not a valid substitute for Offer ID in the single-offer PATCH API.
+func (c *Client) GetOfferIDByTSIN(tsinID string) (string, error) {
+	tsinID = strings.TrimSpace(tsinID)
+	tsin, err := strconv.ParseInt(tsinID, 10, 64)
+	if err != nil || tsin <= 0 {
+		return "", fmt.Errorf("无效的商品 TSIN: %s", tsinID)
+	}
+	res, err := c.GetOffersPage(1, 100, tsinID)
+	if err != nil {
+		return "", fmt.Errorf("查询商品 Offer ID 失败: %w", err)
+	}
+	for _, offer := range res.Offers {
+		if offer.TSINID == tsin && offer.OfferID > 0 {
+			return strconv.FormatInt(offer.OfferID, 10), nil
+		}
+	}
+	return "", fmt.Errorf("当前店铺未找到 TSIN %s 对应的 Offer，请同步商品后重试", tsinID)
+}
+
 func AnyToInt(v any) int {
 	if v == nil {
 		return 0
@@ -1007,4 +1027,3 @@ func (c *Client) GetOfficialBatch(batchID string) (map[string]any, error) {
 	}
 	return result, nil
 }
-

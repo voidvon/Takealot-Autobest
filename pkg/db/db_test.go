@@ -3,9 +3,45 @@ package db
 import (
 	"os"
 	"path/filepath"
-	"testing"
 	"takealot/pkg/config"
+	"testing"
 )
+
+func TestManualPriceCacheStoreIsolation(t *testing.T) {
+	database, err := New(filepath.Join(t.TempDir(), "prices.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	for _, storeID := range []string{"default", "branch"} {
+		if err := database.SaveStoreCachedOffers(storeID, []CachedOffer{{
+			Key: "12345/67890", TSINID: "12345", PLID: "67890", SellingPrice: 300, RRP: 600,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, key := range []string{"12345", "12345/67890"} {
+		if err := database.UpdateCachedOfferPrice("branch", key, 450, 0); err != nil {
+			t.Fatal(err)
+		}
+		for _, storeID := range []string{"default", "branch"} {
+			offers, err := database.LoadStoreCachedOffers(storeID)
+			if err != nil || len(offers) != 1 {
+				t.Fatalf("load %s: %v, %+v", storeID, err, offers)
+			}
+			wantPrice := 300
+			if storeID == "branch" {
+				wantPrice = 450
+			}
+			if offers[0].SellingPrice != wantPrice || offers[0].RRP != 600 {
+				t.Fatalf("unexpected prices for %s: %+v", storeID, offers[0])
+			}
+		}
+	}
+	if key := database.FindTargetKeyByTSIN("missing-store", "12345"); key != "" {
+		t.Fatalf("target lookup used another store's product: %q", key)
+	}
+}
 
 func TestMigrateGJData(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "takealot_db_test_*")

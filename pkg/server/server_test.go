@@ -8,7 +8,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/xuri/excelize/v2"
 
 	"takealot/pkg/api"
 	"takealot/pkg/config"
@@ -212,5 +215,157 @@ func TestFollowTemplateAndUpload(t *testing.T) {
 	}
 	if upRes.Items[0].Stock != 10 || upRes.Items[0].MinPrice != 150 {
 		t.Errorf("解析的库存或保底价不匹配: %+v", upRes.Items[0])
+	}
+}
+
+func TestFollowUploadJSON(t *testing.T) {
+	workbook := excelize.NewFile()
+	defer workbook.Close()
+	sheet := workbook.GetSheetName(0)
+	rows := [][]any{
+		{"商品链接", "最低价", "库存"},
+		{"https://www.takealot.com/测试商品/PLID123", 150, 10},
+		{"https://www.takealot.com/another-product/PLID456", 275, 3},
+	}
+	for i, row := range rows {
+		cell, err := excelize.CoordinatesToCellName(1, i+1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := workbook.SetSheetRow(sheet, cell, &row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	file, err := workbook.WriteToBuffer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Marshaling []byte produces the same Base64 field as FileReader in the frontend.
+	payload, err := json.Marshal(map[string]any{"file_data": file.Bytes(), "file_size": file.Len()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, "test")
+	for _, host := range []string{"127.0.0.1:8000", "wails.localhost"} {
+		t.Run(host, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "http://"+host+"/api/follow/upload", bytes.NewReader(payload))
+			req.Header.Set("Content-Type", "application/json; charset=utf-8")
+			req.Header.Set("Origin", "http://"+host)
+			w := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("upload returned %d: %s", w.Code, w.Body.String())
+			}
+			var result struct {
+				Success bool                `json:"success"`
+				Total   int                 `json:"total"`
+				Items   []engine.FollowItem `json:"items"`
+			}
+			if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+				t.Fatal(err)
+			}
+			if !result.Success || result.Total != 2 || len(result.Items) != 2 {
+				t.Fatalf("unexpected upload result: %+v", result)
+			}
+			for i, item := range result.Items {
+				if item.URL != rows[i+1][0] || item.MinPrice != rows[i+1][1] || item.Stock != rows[i+1][2] {
+					t.Errorf("row %d changed during upload: %+v", i+1, item)
+				}
+			}
+		})
+	}
+}
+
+func TestManualMinPriceUpdateUsesOwningStore(t *testing.T) {
+	database, err := db.New(filepath.Join(t.TempDir(), "manual_prices.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.EnsureDefaultStore("", 1, 1, 5, 1, 1000, 120); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SaveStore(db.Store{ID: "branch", Name: "Branch"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, storeID := range []string{"default", "branch"} {
+		if err := database.SaveStoreTargets(storeID, map[string]config.Target{
+			"12345/67890": {Selected: true, MinPrice: 100, MaxPrice: 900},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := database.SaveStoreCachedOffers(storeID, []db.CachedOffer{{Key: "12345/67890", TSINID: "12345"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv := NewServer(nil, api.NewClientPool(), nil, database, nil, nil, nil, nil, "test")
+	for _, price := range []int{225, 0} {
+		payload, _ := json.Marshal(map[string]any{"tsin_id": "12345", "store_id": "branch", "min_price": price})
+		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8000/api/official/offers/update", bytes.NewReader(payload))
+		req.Header.Set("X-Store-Id", "all")
+		w := httptest.NewRecorder()
+		// Success without seller credentials proves a min-only edit makes no upstream request.
+		srv.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("min-only update failed: %d %s", w.Code, w.Body.String())
+		}
+		for _, storeID := range []string{"default", "branch"} {
+			targets, err := database.LoadStoreTargets(storeID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantMin := 100
+			if storeID == "branch" {
+				wantMin = price
+			}
+			target := targets["12345/67890"]
+			if target.MinPrice != wantMin || !target.Selected || target.MaxPrice != 900 {
+				t.Fatalf("unexpected target for %s: %+v", storeID, target)
+			}
+		}
+	}
+	for _, storeID := range []string{"missing-store", "all"} {
+		payload, _ := json.Marshal(map[string]any{"tsin_id": "12345", "store_id": storeID, "min_price": 500})
+		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8000/api/official/offers/update", bytes.NewReader(payload))
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("invalid store %s was accepted: %d %s", storeID, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestFollowUploadInvalidJSON(t *testing.T) {
+	srv := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, "test")
+	for _, tc := range []struct {
+		name    string
+		payload string
+		message string
+	}{
+		{"malformed JSON", `{`, "上传文件数据无效"},
+		{"invalid Base64", `{"file_data":"%%%","file_size":3}`, "上传文件数据无效"},
+		{"empty file", `{"file_data":"","file_size":0}`, "上传文件为空"},
+		{"incomplete file", `{"file_data":"UEsDBA==","file_size":100}`, "上传文件内容不完整"},
+		{"invalid XLSX", `{"file_data":"UEsDBA==","file_size":4}`, "Excel 打开失败"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/follow/upload", strings.NewReader(tc.payload))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			srv.handleFollowUpload(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+			}
+			var result struct {
+				Success bool   `json:"success"`
+				Error   string `json:"error"`
+			}
+			if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+				t.Fatal(err)
+			}
+			if result.Success || !strings.Contains(result.Error, tc.message) {
+				t.Fatalf("unexpected error response: %+v", result)
+			}
+		})
 	}
 }

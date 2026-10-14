@@ -40,12 +40,12 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   }
 
   const res = await fetch(url, {
+    ...options,
     headers: {
       'Content-Type': 'application/json',
       ...customHeaders,
       ...(options?.headers || {}),
     },
-    ...options,
   })
   if (!res.ok) {
     let errorMsg = `HTTP ${res.status}`
@@ -117,22 +117,26 @@ export const api = {
 
   // Follow Selling
   uploadFollowExcel: async (file: File) => {
-    const formData = new FormData()
-    formData.append('file', file)
-    const customHeaders: Record<string, string> = {}
-    if (currentStoreId) {
-      customHeaders['X-Store-Id'] = currentStoreId
-    }
-    const res = await fetch('/api/follow/upload', {
-      method: 'POST',
-      headers: customHeaders,
-      body: formData,
+    // Read the file before sending it: desktop WebViews can mishandle
+    // file-backed multipart bodies passed through the Wails asset server.
+    const fileData = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => {
+        const result = reader.result
+        if (typeof result !== 'string' || !result.includes(',')) {
+          reject(new Error('文件读取失败，请重新选择 Excel 文件'))
+          return
+        }
+        resolve(result.slice(result.indexOf(',') + 1))
+      }
+      reader.onerror = () => reject(reader.error || new Error('文件读取失败'))
+      reader.onabort = () => reject(new Error('文件读取已取消'))
+      reader.readAsDataURL(file)
     })
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}))
-      throw new Error(data.error || `HTTP ${res.status}`)
-    }
-    return res.json() as Promise<{ success: boolean; total: number; items: FollowItem[] }>
+    return request<{ success: boolean; total: number; items: FollowItem[] }>('/api/follow/upload', {
+      method: 'POST',
+      body: JSON.stringify({ file_data: fileData, file_size: file.size }),
+    })
   },
   startFollowBatch: (items: FollowItem[]) =>
     request<{ success: boolean; message: string }>('/api/follow/start', {
@@ -150,8 +154,9 @@ export const api = {
     ),
   getOfficialOffersCount: () => request<{ count: number }>('/api/official/offers/count'),
   updateOfficialOffer: (
-    offerId: string | number,
+    offerId: string | number | undefined,
     payload: {
+      tsin_id?: string
       selling_price?: number
       rrp?: number
       leadtime_days?: number
@@ -170,7 +175,7 @@ export const api = {
     return request<{ success: boolean; message: string }>('/api/official/offers/update', {
       method: 'POST',
       headers: customHeaders,
-      body: JSON.stringify({ offer_id: String(offerId), store_id: targetStoreId, ...payload }),
+      body: JSON.stringify({ ...payload, offer_id: offerId === undefined ? undefined : String(offerId), store_id: targetStoreId }),
     })
   },
   getOfficialSales: (page = 1, pageSize = 50, startDate = '', endDate = '') =>

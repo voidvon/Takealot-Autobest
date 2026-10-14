@@ -1,11 +1,13 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
 	"math"
+	"mime"
 	"net/http"
 	"os"
 	"os/exec"
@@ -1009,12 +1011,41 @@ func (s *Server) handleFollowUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	file, _, err := r.FormFile("file")
-	if err != nil {
-		jsonResponse(w, http.StatusBadRequest, map[string]any{"success": false, "error": "请选择上传文件"})
-		return
+	var file io.Reader
+	mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if mediaType == "application/json" {
+		// JSON decodes the Base64 string into the original XLSX bytes without
+		// relying on the WebView's file-backed multipart request stream.
+		var payload struct {
+			FileData []byte `json:"file_data"`
+			FileSize int64  `json:"file_size"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"success": false, "error": "上传文件数据无效，请重新选择 Excel 文件"})
+			return
+		}
+		if len(payload.FileData) == 0 {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"success": false, "error": "上传文件为空，请重新选择 Excel 文件"})
+			return
+		}
+		if payload.FileSize != int64(len(payload.FileData)) {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"success": false, "error": "上传文件内容不完整，请重新选择 Excel 文件"})
+			return
+		}
+		file = bytes.NewReader(payload.FileData)
+	} else {
+		// Keep multipart uploads working for existing browser clients.
+		upload, _, err := r.FormFile("file")
+		if r.MultipartForm != nil {
+			defer r.MultipartForm.RemoveAll()
+		}
+		if err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"success": false, "error": "请选择上传文件"})
+			return
+		}
+		defer upload.Close()
+		file = upload
 	}
-	defer file.Close()
 
 	xlsx, err := excelize.OpenReader(file)
 	if err != nil {
@@ -1262,6 +1293,7 @@ func (s *Server) handleOfficialOfferUpdate(w http.ResponseWriter, r *http.Reques
 	}
 	var req struct {
 		OfferID      string         `json:"offer_id"`
+		TSINID       string         `json:"tsin_id,omitempty"`
 		StoreID      string         `json:"store_id,omitempty"`
 		SellingPrice *int           `json:"selling_price,omitempty"`
 		RRP          *int           `json:"rrp,omitempty"`
@@ -1275,8 +1307,10 @@ func (s *Server) handleOfficialOfferUpdate(w http.ResponseWriter, r *http.Reques
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	if req.OfferID == "" {
-		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "offer_id is required"})
+	req.OfferID = strings.TrimSpace(req.OfferID)
+	req.TSINID = strings.TrimSpace(req.TSINID)
+	if req.OfferID == "" && req.TSINID == "" {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "offer_id or tsin_id is required"})
 		return
 	}
 	payload := make(map[string]any)
@@ -1296,21 +1330,38 @@ func (s *Server) handleOfficialOfferUpdate(w http.ResponseWriter, r *http.Reques
 		payload[k] = v
 	}
 
-	store, client, cErr := s.getStoreContext(r)
-	if (cErr != nil || client == nil) && req.StoreID != "" {
-		if st, sErr := s.db.GetStore(req.StoreID); sErr == nil && st != nil {
-			store = st
-			client = s.clientPool.GetOrCreate(st.ID, st.Authorization, st.ProxyURL)
-			cErr = nil
+	requestedStoreID := strings.TrimSpace(req.StoreID)
+	if requestedStoreID != "" {
+		r.Header.Set("X-Store-Id", requestedStoreID)
+	} else {
+		requestedStoreID = strings.TrimSpace(r.Header.Get("X-Store-Id"))
+		if requestedStoreID == "" {
+			requestedStoreID = strings.TrimSpace(r.URL.Query().Get("store_id"))
 		}
 	}
+	store, client, cErr := s.getStoreContext(r)
 	if cErr != nil || client == nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "店铺未连接"})
 		return
 	}
-	if err := client.UpdateSingleOffer(req.OfferID, payload); err != nil {
-		jsonResponse(w, http.StatusInternalServerError, map[string]any{"success": false, "error": err.Error()})
+	if requestedStoreID != "" && (store == nil || store.ID != requestedStoreID) {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "请选择商品所属的有效店铺"})
 		return
+	}
+	if len(payload) > 0 {
+		offerID := req.OfferID
+		if offerID == "" {
+			var err error
+			offerID, err = client.GetOfferIDByTSIN(req.TSINID)
+			if err != nil {
+				jsonResponse(w, http.StatusBadRequest, map[string]any{"success": false, "error": err.Error()})
+				return
+			}
+		}
+		if err := client.UpdateSingleOffer(offerID, payload); err != nil {
+			jsonResponse(w, http.StatusInternalServerError, map[string]any{"success": false, "error": err.Error()})
+			return
+		}
 	}
 
 	targetStoreID := "default"
@@ -1319,8 +1370,12 @@ func (s *Server) handleOfficialOfferUpdate(w http.ResponseWriter, r *http.Reques
 		targetStoreID = store.ID
 		targetStoreName = store.Name
 	}
-	if req.StoreID != "" {
-		targetStoreID = req.StoreID
+	cacheKey := strings.TrimSpace(req.TargetKey)
+	if cacheKey == "" {
+		cacheKey = req.TSINID
+		if cacheKey == "" {
+			cacheKey = req.OfferID
+		}
 	}
 
 	if req.SellingPrice != nil && s.db != nil {
@@ -1328,25 +1383,31 @@ func (s *Server) handleOfficialOfferUpdate(w http.ResponseWriter, r *http.Reques
 		if req.RRP != nil {
 			rrpVal = *req.RRP
 		}
-		_ = s.db.UpdateCachedOfferPrice(targetStoreID, req.OfferID, *req.SellingPrice, rrpVal)
+		if err := s.db.UpdateCachedOfferPrice(targetStoreID, cacheKey, *req.SellingPrice, rrpVal); err != nil {
+			jsonResponse(w, http.StatusInternalServerError, map[string]any{"success": false, "error": "平台参数已更新，但本地售价缓存保存失败: " + err.Error()})
+			return
+		}
 	}
 
 	if req.MinPrice != nil && s.db != nil {
 		targetKey := strings.TrimSpace(req.TargetKey)
 		if targetKey == "" {
-			targetKey = s.db.FindTargetKeyByTSIN(targetStoreID, req.OfferID)
+			targetKey = s.db.FindTargetKeyByTSIN(targetStoreID, cacheKey)
 			if targetKey == "" {
-				targetKey = req.OfferID
+				targetKey = cacheKey
 			}
 		}
 		if err := s.db.UpdateTargetMinPrice(targetStoreID, targetKey, *req.MinPrice); err != nil {
-			s.eng.Log(fmt.Sprintf("⚠️ 更新底价失败 (Offer: %s, Key: %s): %v", req.OfferID, targetKey, err), "WARN", targetStoreID, targetStoreName)
-		} else {
-			s.eng.Log(fmt.Sprintf("🛡️ 商品已更新防亏底价为 R%d (Offer: %s)", *req.MinPrice, req.OfferID), "INFO", targetStoreID, targetStoreName)
+			jsonResponse(w, http.StatusInternalServerError, map[string]any{"success": false, "error": "防亏底价保存失败: " + err.Error()})
+			return
+		} else if s.eng != nil {
+			s.eng.Log(fmt.Sprintf("🛡️ 商品已更新防亏底价为 R%d (商品: %s)", *req.MinPrice, cacheKey), "INFO", targetStoreID, targetStoreName)
 		}
 	}
 
-	s.eng.Log(fmt.Sprintf("📝 已更新 Offer %s 参数", req.OfferID), "INFO")
+	if s.eng != nil {
+		s.eng.Log(fmt.Sprintf("📝 已更新商品 %s 参数", cacheKey), "INFO", targetStoreID, targetStoreName)
+	}
 	jsonResponse(w, http.StatusOK, map[string]any{"success": true, "message": "商品参数更新成功"})
 }
 
