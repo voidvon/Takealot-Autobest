@@ -592,13 +592,15 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 		_ = e.db.SaveStoreCachedOffers(w.storeID, cachedItems)
 	}
 
+	// 多变体商品的颜色/尺码解析缓存（按 PLID 缓存，避免同一轮内重复调用卖家目录接口）。
+	variantCache := make(map[string][]api.CatalogueMPVProduct)
+
 	for key, target := range activeTargets {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
-
 		w.mu.RLock()
 		isPaused := w.isPaused
 		w.mu.RUnlock()
@@ -626,6 +628,7 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 		var offerID string
 		var title string
 		var sku string
+		var platformSKU string
 		var imageURL string
 
 		if o, ok := offerMap[tsinID]; ok {
@@ -636,6 +639,7 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 			curPrice = int(o.SellingPrice)
 			title = o.TSIN.Title
 			sku = o.MerchantSKU
+			platformSKU = o.SKU
 			if sku == "" {
 				sku = o.SKU
 			}
@@ -653,6 +657,7 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 			curPrice = int(curOffer.SellingPrice)
 			title = curOffer.TSIN.Title
 			sku = curOffer.MerchantSKU
+			platformSKU = curOffer.SKU
 			if sku == "" {
 				sku = curOffer.SKU
 			}
@@ -689,47 +694,61 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 			bestPrice = apiClient.GetPublicPrice(plid)
 		}
 
+		// 通过前台商品详情页获取"不含自己"的最低竞品价。
+		// 卖家 API 的 bestPrice 是市场最低价（自己就是最低价时它等于我方售价），
+		// 仅凭它无法判断竞品是否涨价，因此必须补充前台买盒报价列表才能实现跟随涨价。
+		competitorPrice := 0
+		soloConfirmed := false
+		if plid != "" {
+			if bb, bbErr := apiClient.GetPublicBuybox(plid); bbErr == nil && bb != nil {
+				// 多变体商品前台只返回聚合价 (summary)，需要先用我方 TSIN 的颜色/尺码定位到具体变体。
+				if bb.ItemsType == "summary" {
+					if resolved, ok := e.resolveVariantBuybox(apiClient, plid, tsinID, platformSKU, curPrice, variantCache); ok {
+						bb = resolved
+					}
+				}
+				competitorPrice = bb.CompetitorLowestPrice(platformSKU, curPrice)
+				soloConfirmed = bb.IsSolo(platformSKU, curPrice)
+				if competitorPrice == 0 && !soloConfirmed && competing > 1 {
+					e.Log(fmt.Sprintf("ℹ️ [%s] 前台未返回独立竞品报价（多变体商品仅提供聚合价），本轮仅能保守跟降 (TSIN: %s)",
+						truncate(title, 20), tsinID), "DEBUG", w.storeID, w.storeName)
+				}
+			}
+		}
+
+		// 展示用的竞品参考价：优先使用真实竞品价，其次退回市场最低价。
+		refPrice := bestPrice
+		if competitorPrice > 0 {
+			refPrice = competitorPrice
+		}
+
 		priority := "solo"
 		diff := 0
-		if competing > 1 {
-			if bestPrice > 0 {
-				if curPrice <= bestPrice {
+		if competing > 1 || competitorPrice > 0 {
+			if refPrice > 0 {
+				if curPrice <= refPrice {
 					priority = "winning"
 				} else {
 					priority = "losing"
-					diff = curPrice - bestPrice
+					diff = curPrice - refPrice
 				}
 			} else {
 				priority = "winning"
 			}
 		}
-		if bestPrice > 0 {
-			_ = e.db.UpdateStoreSingleMPV(w.storeID, tsinID, bestPrice, competing, priority, diff)
+		if refPrice > 0 {
+			_ = e.db.UpdateStoreSingleMPV(w.storeID, tsinID, refPrice, competing, priority, diff)
 		}
 
-		if bestPrice <= 0 {
+		if bestPrice <= 0 && competitorPrice <= 0 && !soloConfirmed {
 			e.Log(fmt.Sprintf("[%s] 未获取到竞品价格 (TSIN: %s)", truncate(title, 20), tsinID), "DEBUG", w.storeID, w.storeName)
 			time.Sleep(300 * time.Millisecond)
 			continue
 		}
 
-		newPrice := -1
-		actionDesc := ""
-
-		if bestPrice < curPrice {
-			newPrice = bestPrice - decreaseStep
-			if minPrice > 0 && newPrice < minPrice {
-				newPrice = minPrice
-				actionDesc = fmt.Sprintf("竞品低价 R%d，触碰底价保护 R%d", bestPrice, minPrice)
-			} else {
-				actionDesc = fmt.Sprintf("竞品低价 R%d，跟降 R%d 至 R%d", bestPrice, decreaseStep, newPrice)
-			}
-		} else if bestPrice >= curPrice {
-			if bestPrice > curPrice+increaseStep {
-				newPrice = bestPrice - increaseStep
-				actionDesc = fmt.Sprintf("竞品价更高 R%d，跟涨 R%d 至 R%d", bestPrice, increaseStep, newPrice)
-			}
-		}
+		decision := decidePrice(curPrice, competitorPrice, bestPrice, minPrice, target.MaxPrice, decreaseStep, increaseStep, soloConfirmed)
+		newPrice := decision.NewPrice
+		actionDesc := decision.Reason
 
 		if newPrice > 0 && newPrice != curPrice {
 			rrp := int(float64(newPrice) * rrpRatio)
@@ -741,14 +760,12 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 				w.totalRepriced++
 				w.mu.Unlock()
 
-				actionType := "跟降"
-				if strings.Contains(actionDesc, "底价") {
-					actionType = "底价保护"
-				} else if newPrice > curPrice {
-					actionType = "跟涨"
+				actionType := decision.Action
+				if actionType == "" {
+					actionType = "调价"
 				}
-				_ = e.db.RecordStoreReprice(w.storeID, key, tsinID, sku, title, imageURL, w.storeName, actionType, curPrice, newPrice, bestPrice, actionDesc)
-				_ = e.db.UpdateStoreSingleMPV(w.storeID, tsinID, bestPrice, competing, "winning", 0)
+				_ = e.db.RecordStoreReprice(w.storeID, key, tsinID, sku, title, imageURL, w.storeName, actionType, curPrice, newPrice, refPrice, actionDesc)
+				_ = e.db.UpdateStoreSingleMPV(w.storeID, tsinID, refPrice, competing, "winning", 0)
 				_ = e.db.UpdateCachedOfferPrice(w.storeID, tsinID, newPrice, rrp)
 
 				e.Log(fmt.Sprintf("✅ [调价成功] %s... (TSIN:%s) | 原价: R%d -> 新价: R%d (RRP: R%d) | 原因: %s",
@@ -758,7 +775,7 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 			}
 		} else {
 			e.Log(fmt.Sprintf("✓ [%s] 价格保持 R%d (竞品 R%d, 底价保护 R%d)",
-				truncate(title, 20), curPrice, bestPrice, minPrice), "DEBUG", w.storeID, w.storeName)
+				truncate(title, 20), curPrice, refPrice, minPrice), "DEBUG", w.storeID, w.storeName)
 		}
 
 		time.Sleep(300 * time.Millisecond)
@@ -769,6 +786,47 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 	repriced := w.totalRepriced
 	w.mu.RUnlock()
 	e.Log(fmt.Sprintf("🏁 店铺 [%s] 本轮巡检完成！累计巡检: %d 次，累计改价: %d 次", w.storeName, checked, repriced), "INFO", w.storeID, w.storeName)
+}
+
+// resolveVariantBuybox 针对多变体商品，先通过卖家目录接口把我方 TSIN 映射到颜色/尺码，
+// 再按具体变体查询前台买盒报价。
+// 只有在返回结果中确认包含我方报价时才采用，避免变体定位错误导致竞品价误判。
+func (e *Engine) resolveVariantBuybox(apiClient *api.Client, plid, tsinID, platformSKU string, curPrice int, cache map[string][]api.CatalogueMPVProduct) (*api.PublicBuybox, bool) {
+	products, cached := cache[plid]
+	if !cached {
+		var err error
+		products, err = apiClient.GetCatalogueMPVByPLID(plid)
+		if err != nil {
+			cache[plid] = nil // 本轮不再重试，避免反复打接口
+			return nil, false
+		}
+		cache[plid] = products
+	}
+	if len(products) == 0 {
+		return nil, false
+	}
+
+	variant, found := api.FindVariant(products, tsinID)
+	if !found {
+		return nil, false
+	}
+	colour := variant.ColorName
+	if colour == "" {
+		colour = variant.BasicColors
+	}
+	size := variant.Size
+	if colour == "" && size == "" {
+		return nil, false
+	}
+
+	bb, err := apiClient.GetPublicBuyboxForVariant(plid, colour, size)
+	if err != nil || bb == nil {
+		return nil, false
+	}
+	if bb.ItemsType == "summary" || !bb.HasOwnOffer(platformSKU, curPrice) {
+		return nil, false
+	}
+	return bb, true
 }
 
 type FollowItem struct {

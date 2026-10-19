@@ -555,6 +555,205 @@ func (c *Client) GetPublicPrice(plid string) int {
 	return 0
 }
 
+// PublicBuyboxItem 表示前台商品详情页买盒 (buybox) 中的单个卖家报价。
+// 只有当 buybox_items_type 为 "multi" 时才会返回全部竞品报价；
+// "single" 表示仅有一个报价；"summary" 表示多变体商品尚未选定具体变体，只能拿到聚合价。
+type PublicBuyboxItem struct {
+	Price       float64 `json:"price"`
+	SKU         any     `json:"sku"`
+	IsSelected  bool    `json:"is_selected"`
+	IsAddToCart bool    `json:"is_add_to_cart_available"`
+	OfferDetail struct {
+		Preference  string `json:"preference"`
+		DisplayText string `json:"display_text"`
+	} `json:"offer_detail"`
+	StockAvailability struct {
+		Status string `json:"status"`
+	} `json:"stock_availability"`
+}
+
+type PublicBuybox struct {
+	ItemsType string             `json:"buybox_items_type"`
+	Items     []PublicBuyboxItem `json:"items"`
+}
+
+// GetPublicBuybox 拉取前台商品详情页的完整买盒报价列表。
+// 该接口无需卖家授权，是系统获取"第二名竞品真实售价"的唯一可靠来源；
+// 卖家 API 的 MPV 只返回最低价 (bestPrice)，当自己就是最低价时无法得知竞品价格。
+func (c *Client) GetPublicBuybox(plid string) (*PublicBuybox, error) {
+	return c.getPublicBuybox(plid, "", "")
+}
+
+// GetPublicBuyboxForVariant 针对多变体商品，按颜色/尺码定位到具体变体后再拉取买盒报价。
+// 只有定位到具体变体，前台接口才会返回逐个卖家的报价（buybox_items_type = multi）。
+func (c *Client) GetPublicBuyboxForVariant(plid, colour, size string) (*PublicBuybox, error) {
+	return c.getPublicBuybox(plid, colour, size)
+}
+
+func (c *Client) getPublicBuybox(plid, colour, size string) (*PublicBuybox, error) {
+	cleanPLID := strings.TrimSpace(strings.ReplaceAll(strings.ToUpper(plid), "PLID", ""))
+	if cleanPLID == "" {
+		return nil, fmt.Errorf("empty plid")
+	}
+	endpoint := fmt.Sprintf("%s/rest/v-1-16-0/product-details/PLID%s?platform=desktop", PublicBaseURL, cleanPLID)
+	if colour != "" {
+		endpoint += "&colour_variant=" + url.QueryEscape(colour)
+	}
+	if size != "" {
+		endpoint += "&size=" + url.QueryEscape(size)
+	}
+
+	resp, err := c.doRequest("GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	var data struct {
+		Buybox PublicBuybox `json:"buybox"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, err
+	}
+	return &data.Buybox, nil
+}
+
+// MPVVariant 是卖家目录接口返回的变体信息，用于把 TSIN 映射到前台的颜色/尺码参数。
+type MPVVariant struct {
+	TSINID          any     `json:"tsinId"`
+	GTIN            string  `json:"gtin"`
+	Title           string  `json:"title"`
+	Size            string  `json:"size"`
+	BasicColors     string  `json:"basicColors"`
+	ColorName       string  `json:"colorName"`
+	HasOffer        any     `json:"hasOffer"`
+	CompetingOffers any     `json:"competingOffers"`
+	BestPrice       float64 `json:"bestPrice"`
+}
+
+type CatalogueMPVProduct struct {
+	ProductlineID any          `json:"productlineId"`
+	Title         string       `json:"title"`
+	Variants      []MPVVariant `json:"variants"`
+}
+
+// GetCatalogueMPVByPLID 获取商品线下的全部变体（含颜色、尺码）。
+// 用于把当前处理的 TSIN 定位到前台对应的颜色/尺码变体。
+func (c *Client) GetCatalogueMPVByPLID(plid string) ([]CatalogueMPVProduct, error) {
+	cleanPLID := strings.TrimSpace(strings.ReplaceAll(strings.ToUpper(plid), "PLID", ""))
+	if cleanPLID == "" {
+		return nil, fmt.Errorf("empty plid")
+	}
+	url := fmt.Sprintf("%s/1/catalogue/mpv/PLID%s", SellerBaseURL, cleanPLID)
+
+	resp, err := c.doRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	var data []CatalogueMPVProduct
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+// FindVariant 在商品线变体列表中按 TSIN 查找变体。
+func FindVariant(products []CatalogueMPVProduct, tsinID string) (MPVVariant, bool) {
+	if tsinID == "" {
+		return MPVVariant{}, false
+	}
+	for _, p := range products {
+		for _, v := range p.Variants {
+			if AnyToString(v.TSINID) == tsinID {
+				return v, true
+			}
+		}
+	}
+	return MPVVariant{}, false
+}
+
+// HasOwnOffer 判断报价列表中是否存在我方报价（按平台 SKU，其次按售价）。
+func (b *PublicBuybox) HasOwnOffer(ownSKU string, ownPrice int) bool {
+	if b == nil {
+		return false
+	}
+	for _, item := range b.Items {
+		if ownSKU != "" && AnyToString(item.SKU) == ownSKU {
+			return true
+		}
+	}
+	if ownPrice <= 0 {
+		return false
+	}
+	for _, item := range b.Items {
+		if int(item.Price) == ownPrice {
+			return true
+		}
+	}
+	return false
+}
+
+// CompetitorLowestPrice 返回除自身报价之外的最低竞品价格，0 表示无法确定竞品价格。
+// 优先按平台 SKU 精确剔除自身报价；只有当列表里找不到自己的 SKU 时，
+// 才退化为按当前售价剔除，避免把同价竞品误当成自己而漏掉真正的竞争对手。
+func (b *PublicBuybox) CompetitorLowestPrice(ownSKU string, ownPrice int) int {
+	if b == nil || len(b.Items) == 0 {
+		return 0
+	}
+
+	ownBySKU := false
+	if ownSKU != "" {
+		for _, item := range b.Items {
+			if AnyToString(item.SKU) == ownSKU {
+				ownBySKU = true
+				break
+			}
+		}
+	}
+
+	lowest := 0
+	for _, item := range b.Items {
+		price := int(item.Price)
+		if price <= 0 {
+			continue
+		}
+		if ownBySKU {
+			if AnyToString(item.SKU) == ownSKU {
+				continue // 自己的报价
+			}
+		} else if ownPrice > 0 && price == ownPrice {
+			continue // 无法用 SKU 区分时，按价格剔除自身报价
+		}
+		if lowest == 0 || price < lowest {
+			lowest = price
+		}
+	}
+	return lowest
+}
+
+// IsSolo 判断前台买盒是否只有一个报价，且该报价确实属于自己。
+// 只有在这种情况下才能确认"独家在售"，从而安全地回调提价。
+func (b *PublicBuybox) IsSolo(ownSKU string, ownPrice int) bool {
+	if b == nil || len(b.Items) != 1 {
+		return false
+	}
+	item := b.Items[0]
+	if ownSKU != "" && AnyToString(item.SKU) == ownSKU {
+		return true
+	}
+	return ownPrice > 0 && int(item.Price) == ownPrice
+}
+
 func (c *Client) UpdateOfferPrice(offerID string, sellingPrice, rrp int) error {
 	url := fmt.Sprintf("%s/v2/offers/offer/%s", SellerBaseURL, offerID)
 	payload := map[string]int{
