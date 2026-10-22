@@ -556,11 +556,11 @@ func (c *Client) GetPublicPrice(plid string) int {
 }
 
 // PublicBuyboxItem 表示前台商品详情页买盒 (buybox) 中的单个卖家报价。
-// 只有当 buybox_items_type 为 "multi" 时才会返回全部竞品报价；
-// "single" 表示仅有一个报价；"summary" 表示多变体商品尚未选定具体变体，只能拿到聚合价。
+// 买盒展示的报价不保证覆盖所有卖家；summary 只是多变体商品的聚合起价。
 type PublicBuyboxItem struct {
 	Price       float64 `json:"price"`
 	SKU         any     `json:"sku"`
+	SellerID    string  `json:"sponsored_ads_seller_id"`
 	IsSelected  bool    `json:"is_selected"`
 	IsAddToCart bool    `json:"is_add_to_cart_available"`
 	OfferDetail struct {
@@ -573,12 +573,14 @@ type PublicBuyboxItem struct {
 }
 
 type PublicBuybox struct {
-	ItemsType string             `json:"buybox_items_type"`
-	Items     []PublicBuyboxItem `json:"items"`
+	TSINID    any                     `json:"tsin"`
+	ItemsType string                  `json:"buybox_items_type"`
+	Items     []PublicBuyboxItem      `json:"items"`
+	Selectors []PublicVariantSelector `json:"-"`
 }
 
-// GetPublicBuybox 拉取前台商品详情页的完整买盒报价列表。
-// 该接口无需卖家授权，是系统获取"第二名竞品真实售价"的唯一可靠来源；
+// GetPublicBuybox 拉取前台商品详情页展示的买盒报价。
+// 该接口无需卖家授权，可补充卖家 API 未提供的竞品报价；
 // 卖家 API 的 MPV 只返回最低价 (bestPrice)，当自己就是最低价时无法得知竞品价格。
 func (c *Client) GetPublicBuybox(plid string) (*PublicBuybox, error) {
 	return c.getPublicBuybox(plid, "", "")
@@ -609,16 +611,23 @@ func (c *Client) getPublicBuybox(plid, colour, size string) (*PublicBuybox, erro
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusForbidden {
+		return nil, fmt.Errorf("HTTP 403: 前台报价访问被拒绝（可能为 Cloudflare 验证或访问限制）")
+	}
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
 	var data struct {
-		Buybox PublicBuybox `json:"buybox"`
+		Buybox   PublicBuybox `json:"buybox"`
+		Variants struct {
+			Selectors []PublicVariantSelector `json:"selectors"`
+		} `json:"variants"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("前台报价响应不是有效 JSON（可能返回了验证页面）: %w", err)
 	}
+	data.Buybox.Selectors = data.Variants.Selectors
 	return &data.Buybox, nil
 }
 
@@ -684,7 +693,7 @@ func FindVariant(products []CatalogueMPVProduct, tsinID string) (MPVVariant, boo
 
 // HasOwnOffer 判断报价列表中是否存在我方报价（按平台 SKU，其次按售价）。
 func (b *PublicBuybox) HasOwnOffer(ownSKU string, ownPrice int) bool {
-	if b == nil {
+	if !b.HasOfferPrices() {
 		return false
 	}
 	for _, item := range b.Items {
@@ -707,7 +716,7 @@ func (b *PublicBuybox) HasOwnOffer(ownSKU string, ownPrice int) bool {
 // 优先按平台 SKU 精确剔除自身报价；只有当列表里找不到自己的 SKU 时，
 // 才退化为按当前售价剔除，避免把同价竞品误当成自己而漏掉真正的竞争对手。
 func (b *PublicBuybox) CompetitorLowestPrice(ownSKU string, ownPrice int) int {
-	if b == nil || len(b.Items) == 0 {
+	if !b.HasOfferPrices() {
 		return 0
 	}
 
@@ -744,7 +753,7 @@ func (b *PublicBuybox) CompetitorLowestPrice(ownSKU string, ownPrice int) int {
 // IsSolo 判断前台买盒是否只有一个报价，且该报价确实属于自己。
 // 只有在这种情况下才能确认"独家在售"，从而安全地回调提价。
 func (b *PublicBuybox) IsSolo(ownSKU string, ownPrice int) bool {
-	if b == nil || len(b.Items) != 1 {
+	if !b.HasOfferPrices() || b.ItemsType != "single" || len(b.Items) != 1 {
 		return false
 	}
 	item := b.Items[0]

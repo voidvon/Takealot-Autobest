@@ -1,0 +1,260 @@
+{
+  "PLID100616050": {
+    "buybox": {
+      "plid": 100616050,
+      "buybox_items_type": "summary",
+      "items": [
+        {
+          "is_add_to_cart_available": false,
+          "price": 97
+        }
+      ]
+    },
+    "variants": {
+      "selectors": [
+        {
+          "selector_type": "colour_variant",
+          "options": [
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "link_data": {
+                "fields": {
+                  "colour_variant": "1pc"
+                }
+              },
+              "value": {
+                "value": "1pc"
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "link_data": {
+                "fields": {
+                  "colour_variant": "2pcs"
+                }
+              },
+              "value": {
+                "value": "2pcs"
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "link_data": {
+                "fields": {
+                  "colour_variant": "3pcs"
+                }
+              },
+              "value": {
+                "value": "3pcs"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "PLID100616050_1pc": {
+    "buybox": {
+      "plid": 100616050,
+      "tsin": 102263011,
+      "buybox_items_type": "multi",
+      "items": [
+        {
+          "is_add_to_cart_available": true,
+          "sku": 236585562,
+          "price": 135,
+          "sponsored_ads_seller_id": "M29897114"
+        },
+        {
+          "is_add_to_cart_available": true,
+          "sku": 236030233,
+          "price": 98,
+          "sponsored_ads_seller_id": "M29898612"
+        }
+      ]
+    },
+    "variants": {
+      "selectors": []
+    }
+  },
+  "PLID100616050_2pcs": {
+    "buybox": {
+      "plid": 100616050,
+      "tsin": 102263012,
+      "buybox_items_type": "multi",
+      "items": [
+        {
+          "is_add_to_cart_available": true,
+          "sku": 236585563,
+          "price": 245,
+          "sponsored_ads_seller_id": "M29897114"
+        },
+        {
+          "is_add_to_cart_available": true,
+          "sku": 266180110,
+          "price": 116,
+          "sponsored_ads_seller_id": "M29895762"
+        }
+      ]
+    },
+    "variants": {
+      "selectors": []
+    }
+  },
+  "PLID100616050_3pcs": {
+    "buybox": {
+      "plid": 100616050,
+      "tsin": 102263013,
+      "buybox_items_type": "multi",
+      "items": [
+        {
+          "is_add_to_cart_available": true,
+          "sku": 236585564,
+          "price": 260,
+          "sponsored_ads_seller_id": "M29897114"
+        },
+        {
+          "is_add_to_cart_available": true,
+          "sku": 233653705,
+          "price": 190,
+          "sponsored_ads_seller_id": "M29895416"
+        }
+      ]
+    },
+    "variants": {
+      "selectors": []
+    }
+  },
+  "PLID100929476": {
+    "buybox": {
+      "plid": 100929476,
+      "buybox_items_type": "summary",
+      "items": [
+        {
+          "is_add_to_cart_available": false,
+          "price": 79
+        }
+      ]
+    },
+    "variants": {
+      "selectors": [
+        {
+          "selector_type": "colour_variant",
+          "options": [
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "link_data": {
+                "fields": {
+                  "colour_variant": "1pc"
+                }
+              },
+              "value": {
+                "value": "1pc"
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "link_data": {
+                "fields": {
+                  "colour_variant": "2pcs"
+                }
+              },
+              "value": {
+                "value": "2pcs"
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "link_data": {
+                "fields": {
+                  "colour_variant": "3pcs"
+                }
+              },
+              "value": {
+                "value": "3pcs"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "PLID100929476_1pc": {
+    "buybox": {
+      "plid": 100929476,
+      "tsin": 102632374,
+      "buybox_items_type": "multi",
+      "items": [
+        {
+          "is_add_to_cart_available": true,
+          "sku": 233924872,
+          "price": 145,
+          "sponsored_ads_seller_id": "M29897114"
+        },
+        {
+          "is_add_to_cart_available": true,
+          "sku": 266179328,
+          "price": 79,
+          "sponsored_ads_seller_id": "M29895762"
+        }
+      ]
+    },
+    "variants": {
+      "selectors": []
+    }
+  },
+  "PLID100929476_2pcs": {
+    "buybox": {
+      "plid": 100929476,
+      "tsin": 102632375,
+      "buybox_items_type": "multi",
+      "items": [
+        {
+          "is_add_to_cart_available": true,
+          "sku": 232630456,
+          "price": 140,
+          "sponsored_ads_seller_id": "M29898873"
+        },
+        {
+          "is_add_to_cart_available": true,
+          "sku": 266179329,
+          "price": 116,
+          "sponsored_ads_seller_id": "M29895762"
+        }
+      ]
+    },
+    "variants": {
+      "selectors": []
+    }
+  },
+  "PLID100929476_3pcs": {
+    "buybox": {
+      "plid": 100929476,
+      "tsin": 102632376,
+      "buybox_items_type": "multi",
+      "items": [
+        {
+          "is_add_to_cart_available": true,
+          "sku": 232630457,
+          "price": 201,
+          "sponsored_ads_seller_id": "M29898873"
+        },
+        {
+          "is_add_to_cart_available": true,
+          "sku": 266164439,
+          "price": 170,
+          "sponsored_ads_seller_id": "M29901033"
+        }
+      ]
+    },
+    "variants": {
+      "selectors": []
+    }
+  }
+}

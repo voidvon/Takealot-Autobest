@@ -36,6 +36,9 @@ func decidePrice(curPrice, competitorPrice, bestPrice, minPrice, maxPrice, decre
 	if competitorPrice > 0 {
 		switch {
 		case competitorPrice > curPrice:
+			if maxPrice > 0 && curPrice >= maxPrice {
+				return priceDecision{NewPrice: -1, Reason: fmt.Sprintf("当前价 R%d 已达到或超过封顶价 R%d，保持价格", curPrice, maxPrice)}
+			}
 			target := competitorPrice - increaseStep
 			if maxPrice > 0 && target > maxPrice {
 				target = maxPrice
@@ -95,7 +98,10 @@ func decidePrice(curPrice, competitorPrice, bestPrice, minPrice, maxPrice, decre
 				Reason:   fmt.Sprintf("独家在售，回调提价 R%d 至 R%d（封顶 R%d）", increaseStep, target, maxPrice),
 			}
 		}
-		return priceDecision{NewPrice: -1}
+		if maxPrice <= 0 {
+			return priceDecision{NewPrice: -1, Reason: "独家在售，但未设置封顶价，保持价格"}
+		}
+		return priceDecision{NewPrice: -1, Reason: fmt.Sprintf("独家在售，当前价 R%d 已达到或超过封顶价 R%d，保持价格", curPrice, maxPrice)}
 	}
 
 	// 3. 存在竞品但拿不到竞品报价（例如多变体商品只返回聚合价）：
@@ -123,5 +129,5 @@ func decidePrice(curPrice, competitorPrice, bestPrice, minPrice, maxPrice, decre
 		}
 	}
 
-	return priceDecision{NewPrice: -1}
+	return priceDecision{NewPrice: -1, Reason: "未获取到可靠的独立竞品价，无法计算跟涨目标，保持价格"}
 }

@@ -1,30 +1,31 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { api } from '../../api/client'
 import type { LogEntry } from '../../types'
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '../ui/card'
+import { Card, CardContent } from '../ui/card'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import { Badge } from '../ui/badge'
 import { Tabs, TabsList, TabsTrigger } from '../ui/tabs'
 import { Switch } from '../ui/switch'
+import { toast } from '../ui/use-toast'
+import { buildLogExport, formatLogEntry, saveLogExport } from '../../lib/log-export'
 import {
-  Terminal,
   Search,
   Trash2,
   Copy,
   Check,
-  ArrowDown,
-  RefreshCw,
-  Radio,
+  Download,
+  Loader2,
 } from 'lucide-react'
 
 export const LogsTab: React.FC = () => {
   const [logs, setLogs] = useState<LogEntry[]>([])
-  const [levelFilter, setLevelFilter] = useState<'ALL' | 'SUCCESS' | 'INFO' | 'WARN' | 'ERROR'>('ALL')
+  const [levelFilter, setLevelFilter] = useState<'ALL' | LogEntry['level']>('ALL')
   const [searchQuery, setSearchQuery] = useState('')
   const [autoScroll, setAutoScroll] = useState(true)
   const [connected, setConnected] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [exporting, setExporting] = useState(false)
 
   const logContainerRef = useRef<HTMLDivElement>(null)
 
@@ -94,10 +95,26 @@ export const LogsTab: React.FC = () => {
   })
 
   const handleCopyLogs = () => {
-    const text = filteredLogs.map((l) => `[${l.time}] [${l.level}] ${l.message}`).join('\n')
+    const text = filteredLogs.map(formatLogEntry).join('\n')
     navigator.clipboard.writeText(text)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
+  }
+
+  const handleExportLogs = async () => {
+    if (filteredLogs.length === 0 || exporting) return
+    setExporting(true)
+    const now = new Date()
+    const content = buildLogExport(filteredLogs, levelFilter, searchQuery, now)
+    const count = filteredLogs.length
+    try {
+      const saved = await saveLogExport(content, now)
+      if (saved) toast.success(`已导出 ${count} 条日志`, saved)
+    } catch (error) {
+      toast.error('日志导出失败', error instanceof Error ? error.message : String(error))
+    } finally {
+      setExporting(false)
+    }
   }
 
   const getLevelBadge = (level: string) => {
@@ -108,6 +125,8 @@ export const LogsTab: React.FC = () => {
         return <Badge variant="warning" className="text-[10px] px-1 py-0">WARN</Badge>
       case 'ERROR':
         return <Badge variant="destructive" className="text-[10px] px-1 py-0">ERROR</Badge>
+      case 'DEBUG':
+        return <Badge variant="secondary" className="text-[10px] px-1 py-0">DEBUG</Badge>
       default:
         return <Badge variant="secondary" className="text-[10px] px-1 py-0">INFO</Badge>
     }
@@ -132,10 +151,21 @@ export const LogsTab: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" size="sm" onClick={handleCopyLogs} className="gap-1.5 text-xs">
             {copied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
             <span>{copied ? '已复制' : '复制日志'}</span>
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleExportLogs}
+            disabled={exporting || filteredLogs.length === 0}
+            title="导出当前筛选结果为文本文件"
+            className="gap-1.5 text-xs"
+          >
+            {exporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+            <span>{exporting ? '正在导出…' : '导出日志'}</span>
           </Button>
           <Button
             variant="outline"
@@ -167,7 +197,7 @@ export const LogsTab: React.FC = () => {
             {/* Level Filter Tabs */}
             <Tabs value={levelFilter} onValueChange={(v) => setLevelFilter(v as any)}>
               <TabsList className="h-8 p-0.5">
-                {(['ALL', 'SUCCESS', 'INFO', 'WARN', 'ERROR'] as const).map((lvl) => (
+                {(['ALL', 'SUCCESS', 'INFO', 'WARN', 'ERROR', 'DEBUG'] as const).map((lvl) => (
                   <TabsTrigger key={lvl} value={lvl} className="text-[11px] h-7 px-2.5 font-mono">
                     {lvl}
                   </TabsTrigger>
@@ -192,6 +222,10 @@ export const LogsTab: React.FC = () => {
           </div>
         </CardContent>
       </Card>
+
+      <p className="text-xs text-muted-foreground">
+        复制和导出仅包含当前筛选结果。最多保留最近 500 条运行日志，重启后清空。
+      </p>
 
       {/* Terminal View Container */}
       <Card className="border-border/90 bg-slate-950 text-slate-100 overflow-hidden shadow-xl rounded-2xl">

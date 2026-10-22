@@ -16,6 +16,7 @@ import (
 
 type LogEntry struct {
 	Time      string `json:"time"`
+	Timestamp string `json:"timestamp,omitempty"`
 	Level     string `json:"level"`
 	Message   string `json:"message"`
 	StoreID   string `json:"store_id,omitempty"`
@@ -105,10 +106,12 @@ func (e *Engine) getOrCreateWorker(storeID string) *StoreWorker {
 }
 
 func (e *Engine) Log(message, level string, storeInfo ...string) {
+	now := time.Now()
 	entry := LogEntry{
-		Time:    time.Now().Format("15:04:05"),
-		Level:   level,
-		Message: message,
+		Time:      now.Format("15:04:05"),
+		Timestamp: now.Format(time.RFC3339),
+		Level:     level,
+		Message:   message,
 	}
 	if len(storeInfo) > 0 && storeInfo[0] != "" {
 		entry.StoreID = storeInfo[0]
@@ -501,10 +504,20 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 	decreaseStep := store.PriceDecreaseStep
 	increaseStep := store.PriceIncreaseStep
 	rrpRatio := store.RRPPercentage / 100.0
+	// 卖家后台的 merchant SKU 与前台数字 SKU 不同，必须获取真实卖家 ID。
+	var sellerID int64
+	seller, sellerErr := apiClient.GetSellerInfo()
+	if sellerErr == nil && seller != nil {
+		sellerID = seller.SellerID
+	}
+	if sellerID <= 0 {
+		e.Log(fmt.Sprintf("⚠️ 店铺 [%s] 未获取到卖家 ID，本轮暂停调价，避免误认自身报价（请求错误: %v）", store.Name, sellerErr), "WARN", w.storeID, store.Name)
+		return
+	}
 
 	// 缓存店铺在线名称
 	if w.storeName == "默认店铺" || w.storeName == "" {
-		if seller, err := apiClient.GetSellerInfo(); err == nil && seller != nil && seller.DisplayName != "" {
+		if seller.DisplayName != "" {
 			w.storeName = seller.DisplayName
 			store.Name = seller.DisplayName
 			_ = e.db.SaveStore(*store)
@@ -594,6 +607,8 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 
 	// 多变体商品的颜色/尺码解析缓存（按 PLID 缓存，避免同一轮内重复调用卖家目录接口）。
 	variantCache := make(map[string][]api.CatalogueMPVProduct)
+	publicVariantCache := make(map[string]*api.PublicBuybox)
+	publicErrors := make(map[string]error)
 
 	for key, target := range activeTargets {
 		select {
@@ -628,7 +643,6 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 		var offerID string
 		var title string
 		var sku string
-		var platformSKU string
 		var imageURL string
 
 		if o, ok := offerMap[tsinID]; ok {
@@ -639,7 +653,6 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 			curPrice = int(o.SellingPrice)
 			title = o.TSIN.Title
 			sku = o.MerchantSKU
-			platformSKU = o.SKU
 			if sku == "" {
 				sku = o.SKU
 			}
@@ -657,7 +670,6 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 			curPrice = int(curOffer.SellingPrice)
 			title = curOffer.TSIN.Title
 			sku = curOffer.MerchantSKU
-			platformSKU = curOffer.SKU
 			if sku == "" {
 				sku = curOffer.SKU
 			}
@@ -684,14 +696,10 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 
 		mpv, err := apiClient.GetMPVByTSIN(tsinID)
 		bestPrice := 0
-		competing := 1
+		competing := 0 // 0 表示卖家接口未确认报价数量，不能据此判定独家。
 		if err == nil && mpv != nil {
 			bestPrice = int(mpv.BestPrice)
 			competing = api.AnyToInt(mpv.CompetingOffers)
-		}
-
-		if bestPrice <= 0 && plid != "" {
-			bestPrice = apiClient.GetPublicPrice(plid)
 		}
 
 		// 通过前台商品详情页获取"不含自己"的最低竞品价。
@@ -699,21 +707,50 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 		// 仅凭它无法判断竞品是否涨价，因此必须补充前台买盒报价列表才能实现跟随涨价。
 		competitorPrice := 0
 		soloConfirmed := false
+		quoteConfirmed := false
 		if plid != "" {
-			if bb, bbErr := apiClient.GetPublicBuybox(plid); bbErr == nil && bb != nil {
-				// 多变体商品前台只返回聚合价 (summary)，需要先用我方 TSIN 的颜色/尺码定位到具体变体。
-				if bb.ItemsType == "summary" {
-					if resolved, ok := e.resolveVariantBuybox(apiClient, plid, tsinID, platformSKU, curPrice, variantCache); ok {
-						bb = resolved
-					}
-				}
-				competitorPrice = bb.CompetitorLowestPrice(platformSKU, curPrice)
-				soloConfirmed = bb.IsSolo(platformSKU, curPrice)
-				if competitorPrice == 0 && !soloConfirmed && competing > 1 {
-					e.Log(fmt.Sprintf("ℹ️ [%s] 前台未返回独立竞品报价（多变体商品仅提供聚合价），本轮仅能保守跟降 (TSIN: %s)",
-						truncate(title, 20), tsinID), "DEBUG", w.storeID, w.storeName)
+			bb, bbErr := publicVariantCache[plid], publicErrors[plid]
+			if bb == nil && bbErr == nil {
+				bb, bbErr = apiClient.GetPublicBuybox(plid)
+				if bbErr == nil {
+					publicVariantCache[plid] = bb
+				} else {
+					publicErrors[plid] = bbErr // 同一轮不重复请求获取失败的商品主页。
 				}
 			}
+			if bbErr == nil && bb != nil {
+				if !bb.MatchesTSIN(tsinID) {
+					if resolved, ok := e.resolveVariantBuybox(apiClient, plid, tsinID, variantCache); ok {
+						bb = resolved
+					} else {
+						// 卖家目录的颜色名不一定等于前台的规格值，例如 1pc/2pcs/3pcs。
+						bb, bbErr = apiClient.ResolvePublicBuyboxByTSIN(plid, tsinID, bb, publicVariantCache)
+					}
+				}
+				if bbErr == nil {
+					var quoteReason string
+					competitorPrice, soloConfirmed, quoteReason = buyboxPrices(bb, tsinID, sellerID, curPrice, competing)
+					quoteConfirmed = quoteReason == ""
+					if quoteReason != "" {
+						e.Log(fmt.Sprintf("ℹ️ [%s] %s (TSIN: %s)", truncate(title, 20), quoteReason, tsinID), "WARN", w.storeID, w.storeName)
+					}
+					// 只允许具体 TSIN 的真实报价补充最低价，不采用跨规格的汇总起价。
+					if bestPrice <= 0 && bb.MatchesTSIN(tsinID) {
+						bestPrice = bb.CompetitorLowestPrice("", 0)
+					}
+				}
+			}
+			if bbErr != nil {
+				e.Log(fmt.Sprintf("⚠️ [%s] 获取具体规格竞品报价失败，本轮暂停调价 (TSIN: %s, PLID: %s): %v", truncate(title, 20), tsinID, plid, bbErr), "WARN", w.storeID, w.storeName)
+			}
+		} else {
+			e.Log(fmt.Sprintf("⚠️ [%s] 缺少 PLID，无法获取竞品报价，本轮暂停调价 (TSIN: %s)", truncate(title, 20), tsinID), "WARN", w.storeID, w.storeName)
+		}
+		if !quoteConfirmed {
+			// bestPrice 也包含自身报价且可能延迟更新，不能用它追降自己的旧价，
+			// 也不把它写成已经确认的竞品价覆盖历史数据。
+			time.Sleep(300 * time.Millisecond)
+			continue
 		}
 
 		// 展示用的竞品参考价：优先使用真实竞品价，其次退回市场最低价。
@@ -739,7 +776,6 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 		if refPrice > 0 {
 			_ = e.db.UpdateStoreSingleMPV(w.storeID, tsinID, refPrice, competing, priority, diff)
 		}
-
 		if bestPrice <= 0 && competitorPrice <= 0 && !soloConfirmed {
 			e.Log(fmt.Sprintf("[%s] 未获取到竞品价格 (TSIN: %s)", truncate(title, 20), tsinID), "DEBUG", w.storeID, w.storeName)
 			time.Sleep(300 * time.Millisecond)
@@ -774,8 +810,8 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 				e.Log(fmt.Sprintf("❌ [调价失败] %s...: %v", truncate(title, 22), err), "ERROR", w.storeID, w.storeName)
 			}
 		} else {
-			e.Log(fmt.Sprintf("✓ [%s] 价格保持 R%d (竞品 R%d, 底价保护 R%d)",
-				truncate(title, 20), curPrice, refPrice, minPrice), "DEBUG", w.storeID, w.storeName)
+			e.Log(fmt.Sprintf("✓ [%s] 价格保持 R%d (TSIN: %s, 竞品 R%d, 市场最低 R%d, 底价 R%d, 封顶 R%d) | 原因: %s",
+				truncate(title, 20), curPrice, tsinID, competitorPrice, bestPrice, minPrice, target.MaxPrice, actionDesc), "DEBUG", w.storeID, w.storeName)
 		}
 
 		time.Sleep(300 * time.Millisecond)
@@ -790,8 +826,8 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 
 // resolveVariantBuybox 针对多变体商品，先通过卖家目录接口把我方 TSIN 映射到颜色/尺码，
 // 再按具体变体查询前台买盒报价。
-// 只有在返回结果中确认包含我方报价时才采用，避免变体定位错误导致竞品价误判。
-func (e *Engine) resolveVariantBuybox(apiClient *api.Client, plid, tsinID, platformSKU string, curPrice int, cache map[string][]api.CatalogueMPVProduct) (*api.PublicBuybox, bool) {
+// 只接受 TSIN 一致的报价，不能通过价格推断规格。
+func (e *Engine) resolveVariantBuybox(apiClient *api.Client, plid, tsinID string, cache map[string][]api.CatalogueMPVProduct) (*api.PublicBuybox, bool) {
 	products, cached := cache[plid]
 	if !cached {
 		var err error
@@ -823,7 +859,7 @@ func (e *Engine) resolveVariantBuybox(apiClient *api.Client, plid, tsinID, platf
 	if err != nil || bb == nil {
 		return nil, false
 	}
-	if bb.ItemsType == "summary" || !bb.HasOwnOffer(platformSKU, curPrice) {
+	if !bb.MatchesTSIN(tsinID) {
 		return nil, false
 	}
 	return bb, true

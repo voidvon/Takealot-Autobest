@@ -167,7 +167,8 @@ export interface EngineStatus {
 
 export interface LogEntry {
   time: string
-  level: 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS'
+  timestamp?: string
+  level: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS'
   message: string
   store_id?: string
   store_name?: string
