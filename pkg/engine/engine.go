@@ -12,6 +12,7 @@ import (
 	"takealot/pkg/api"
 	"takealot/pkg/config"
 	"takealot/pkg/db"
+	"takealot/pkg/reporter"
 )
 
 type LogEntry struct {
@@ -62,6 +63,7 @@ type Engine struct {
 	clientPool        *api.ClientPool
 	db                *db.DB
 	membershipChecker MembershipChecker
+	reporter          reporter.Reporter
 
 	workerMu sync.RWMutex
 	workers  map[string]*StoreWorker
@@ -80,7 +82,12 @@ func NewEngine(cfgMgr *config.Manager, clientPool *api.ClientPool, database *db.
 		workers:           make(map[string]*StoreWorker),
 		logs:              make([]LogEntry, 0, 500),
 		subscribers:       make(map[chan LogEntry]struct{}),
+		reporter:          reporter.NewFromEnv(),
 	}
+}
+
+func (e *Engine) SetReporter(r reporter.Reporter) {
+	e.reporter = r
 }
 
 func (e *Engine) getOrCreateWorker(storeID string) *StoreWorker {
@@ -742,6 +749,14 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 			}
 			if bbErr != nil {
 				e.Log(fmt.Sprintf("⚠️ [%s] 获取具体规格竞品报价失败，本轮暂停调价 (TSIN: %s, PLID: %s): %v", truncate(title, 20), tsinID, plid, bbErr), "WARN", w.storeID, w.storeName)
+				if e.reporter != nil {
+					errStr := bbErr.Error()
+					if strings.Contains(errStr, "Cloudflare") || strings.Contains(errStr, "403") || strings.Contains(errStr, "验证页面") {
+						e.reporter.ReportCloudflareBlock(w.storeName, tsinID, plid, errStr)
+					} else {
+						e.reporter.ReportPriceFetchError(w.storeName, tsinID, plid, errStr)
+					}
+				}
 			}
 		} else {
 			e.Log(fmt.Sprintf("⚠️ [%s] 缺少 PLID，无法获取竞品报价，本轮暂停调价 (TSIN: %s)", truncate(title, 20), tsinID), "WARN", w.storeID, w.storeName)
