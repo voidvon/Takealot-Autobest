@@ -25,6 +25,7 @@ import {
   Copy,
   Check,
   Rocket,
+  KeyRound,
 } from 'lucide-react'
 
 interface Props {
@@ -58,6 +59,13 @@ export function AccountModal({
   const [confirmation, setConfirmation] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmation, setShowConfirmation] = useState(false)
+  const [showChangePassword, setShowChangePassword] = useState(false)
+  const [oldPassword, setOldPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmNewPassword, setConfirmNewPassword] = useState('')
+  const [showOldPassword, setShowOldPassword] = useState(false)
+  const [showNewPassword, setShowNewPassword] = useState(false)
+  const [showConfirmNewPassword, setShowConfirmNewPassword] = useState(false)
   const [busy, setBusy] = useState(false)
   const [checkingUpdate, setCheckingUpdate] = useState(false)
   const [error, setError] = useState('')
@@ -70,6 +78,10 @@ export function AccountModal({
       setActiveTab(initialTab)
       setError('')
       setNotice('')
+      setShowChangePassword(false)
+      setOldPassword('')
+      setNewPassword('')
+      setConfirmNewPassword('')
     }
   }, [open, initialTab])
 
@@ -85,6 +97,9 @@ export function AccountModal({
       setBusy(false)
       setPassword('')
       setConfirmation('')
+      setOldPassword('')
+      setNewPassword('')
+      setConfirmNewPassword('')
     }
   }
 
@@ -266,6 +281,121 @@ export function AccountModal({
                     )}
                   </div>
 
+                  {/* Change Password Form (Collapsible) */}
+                  {showChangePassword && (
+                    <div className="rounded-lg border border-primary/30 bg-card p-3 space-y-3 text-xs animate-in fade-in-50">
+                      <div className="flex items-center justify-between pb-1 border-b border-border/40">
+                        <span className="font-semibold text-foreground flex items-center gap-1.5">
+                          <KeyRound className="h-3.5 w-3.5 text-primary" />
+                          修改账号密码
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowChangePassword(false)
+                            setOldPassword('')
+                            setNewPassword('')
+                            setConfirmNewPassword('')
+                            setError('')
+                          }}
+                          className="text-xs text-muted-foreground hover:text-foreground cursor-pointer"
+                        >
+                          收起
+                        </button>
+                      </div>
+
+                      {/* Old Password */}
+                      <div className="space-y-1">
+                        <label className="text-muted-foreground font-medium">当前原密码</label>
+                        <div className="relative">
+                          <Input
+                            type={showOldPassword ? 'text' : 'password'}
+                            value={oldPassword}
+                            onChange={(e) => setOldPassword(e.target.value)}
+                            placeholder="请输入原密码"
+                            className="pr-8 text-xs h-8"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowOldPassword(!showOldPassword)}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer"
+                          >
+                            {showOldPassword ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* New Password */}
+                      <div className="space-y-1">
+                        <label className="text-muted-foreground font-medium">新密码（至少 6 位）</label>
+                        <div className="relative">
+                          <Input
+                            type={showNewPassword ? 'text' : 'password'}
+                            value={newPassword}
+                            onChange={(e) => setNewPassword(e.target.value)}
+                            placeholder="请输入新密码"
+                            className="pr-8 text-xs h-8"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowNewPassword(!showNewPassword)}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer"
+                          >
+                            {showNewPassword ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Confirm New Password */}
+                      <div className="space-y-1">
+                        <label className="text-muted-foreground font-medium">确认新密码</label>
+                        <div className="relative">
+                          <Input
+                            type={showConfirmNewPassword ? 'text' : 'password'}
+                            value={confirmNewPassword}
+                            onChange={(e) => setConfirmNewPassword(e.target.value)}
+                            placeholder="请再次输入新密码"
+                            className="pr-8 text-xs h-8"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowConfirmNewPassword(!showConfirmNewPassword)}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer"
+                          >
+                            {showConfirmNewPassword ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="pt-1">
+                        <Button
+                          variant="default"
+                          size="sm"
+                          disabled={busy}
+                          loading={busy}
+                          onClick={() => void run(async () => {
+                            if (!oldPassword.trim()) throw new Error('请输入原密码')
+                            if (!newPassword) throw new Error('请输入新密码')
+                            if (newPassword.length < 6) throw new Error('新密码长度不能少于 6 个字符')
+                            if (newPassword !== confirmNewPassword) throw new Error('两次输入的新密码不一致')
+                            const currentUsername = status?.user?.username || ''
+                            const res = await api.changeAccountPassword(oldPassword, newPassword)
+                            setNotice(res.message || '密码修改成功，请使用新密码重新登录')
+                            setShowChangePassword(false)
+                            setOldPassword('')
+                            setNewPassword('')
+                            setConfirmNewPassword('')
+                            if (currentUsername) setUsername(currentUsername)
+                            onAuthenticated(await api.getAccountStatus())
+                          })}
+                          className="w-full text-xs h-8"
+                        >
+                          确认修改密码
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Action Buttons */}
                   <div className="flex items-center gap-2 pt-1">
                     <Button
@@ -281,11 +411,29 @@ export function AccountModal({
                     </Button>
 
                     <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => {
+                        setShowChangePassword(!showChangePassword)
+                        setError('')
+                        setNotice('')
+                      }}
+                      className={cn(
+                        "gap-1.5 text-xs h-9 px-3",
+                        showChangePassword && "bg-muted font-semibold"
+                      )}
+                    >
+                      <KeyRound className="h-3.5 w-3.5" />
+                      <span>{showChangePassword ? '取消修改' : '修改密码'}</span>
+                    </Button>
+
+                    <Button
                       variant="destructive"
                       size="sm"
                       disabled={busy}
                       onClick={() => void run(async () => { onAuthenticated(await api.logoutAccount()) })}
-                      className="gap-1.5 text-xs h-9 px-4"
+                      className="gap-1.5 text-xs h-9 px-3"
                     >
                       <LogOut className="h-3.5 w-3.5" />
                       <span>退出登录</span>

@@ -165,6 +165,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/account/login", s.handleAccountLogin)
 	s.mux.HandleFunc("/api/account/register", s.handleAccountRegister)
 	s.mux.HandleFunc("/api/account/logout", s.handleAccountLogout)
+	s.mux.HandleFunc("/api/account/change-password", s.handleAccountChangePassword)
 	s.mux.HandleFunc("/api/account/refresh", s.handleAccountRefresh)
 	s.mux.HandleFunc("/api/config", s.handleConfig)
 	s.mux.HandleFunc("/api/test_auth", s.handleTestAuth)
@@ -451,6 +452,25 @@ func (s *Server) handleAccountLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, 200, s.accountMgr.GetStatus())
+}
+func (s *Server) handleAccountChangePassword(w http.ResponseWriter, r *http.Request) {
+	if !s.accountReady(w, r, "POST") {
+		return
+	}
+	var in struct {
+		OldPassword string `json:"old_password"`
+		NewPassword string `json:"new_password"`
+	}
+	if json.NewDecoder(r.Body).Decode(&in) != nil {
+		jsonResponse(w, 400, map[string]string{"error": "请求格式错误"})
+		return
+	}
+	s.eng.StopAll()
+	if err := s.accountMgr.ChangePassword(r.Context(), in.OldPassword, in.NewPassword); err != nil {
+		accountError(w, err)
+		return
+	}
+	jsonResponse(w, 200, map[string]any{"success": true, "message": "密码修改成功，请使用新密码重新登录"})
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {

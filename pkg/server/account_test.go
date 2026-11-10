@@ -22,6 +22,7 @@ func TestAccountGateAndLocalOrigins(t *testing.T) {
 	}{
 		{"GET", "/api/account/status", "", 200},
 		{"POST", "/api/account/login", "", 503},
+		{"POST", "/api/account/change-password", "", 503},
 		{"GET", "/api/stores", "", 403},
 		{"POST", "/api/account/login", "https://evil.example", 403},
 		{"POST", "/api/account/login", "http://127.0.0.1:8000", 503},

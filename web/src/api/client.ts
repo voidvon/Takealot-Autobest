@@ -312,6 +312,11 @@ export const api = {
     request<AccountStatus>('/api/account/login', { method: 'POST', body: JSON.stringify({ identifier, password }) }),
   registerAccount: (username: string, email: string, password: string) =>
     request<{ ok: boolean }>('/api/account/register', { method: 'POST', body: JSON.stringify({ username, email, password }) }),
+  changeAccountPassword: (oldPassword: string, newPassword: string) =>
+    request<{ success: boolean; message: string }>('/api/account/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
+    }),
   logoutAccount: () => request<AccountStatus>('/api/account/logout', { method: 'POST', body: '{}' }),
 
   // Automatic Updater

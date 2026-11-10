@@ -161,6 +161,43 @@ func (m *Manager) Register(ctx context.Context, username, email, password string
 	}
 	return m.call(ctx, "POST", "/auth/register", map[string]string{"username": username, "email": email, "password": password}, nil)
 }
+func (m *Manager) ChangePassword(ctx context.Context, oldPassword, newPassword string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.base == "" {
+		return &APIError{Code: "not_configured", Message: m.status.Message, Status: 503}
+	}
+	if m.token == "" {
+		return &APIError{Code: "unauthorized", Message: "未登录，请先登录账号", Status: 401}
+	}
+	if strings.TrimSpace(oldPassword) == "" {
+		return &APIError{Code: "invalid", Message: "请输入原密码", Status: 400}
+	}
+	if len(newPassword) < 6 {
+		return &APIError{Code: "invalid", Message: "新密码至少需要 6 个字符", Status: 400}
+	}
+	var out struct {
+		Reauthenticate bool `json:"reauthenticate"`
+	}
+	err := m.call(ctx, "PUT", "/me/password", map[string]string{
+		"old_password": oldPassword,
+		"new_password": newPassword,
+	}, &out)
+	if err != nil {
+		return err
+	}
+	m.signedOut = true
+	m.status.Eligible = false
+	m.status.Authenticated = false
+	m.status.User = nil
+	m.status.State = "signed_out"
+	m.token = ""
+	if m.store != nil {
+		_ = m.store.Delete()
+	}
+	m.status = Status{State: "signed_out", Message: "密码修改成功，请重新登录"}
+	return nil
+}
 func (m *Manager) Login(ctx context.Context, identifier, password string) (Status, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

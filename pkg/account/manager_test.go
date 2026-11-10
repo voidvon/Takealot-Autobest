@@ -174,3 +174,87 @@ func TestURLSecurity(t *testing.T) {
 		t.Fatal("unconfigured not locked")
 	}
 }
+
+func TestChangePassword(t *testing.T) {
+	ctx := context.Background()
+	var receivedOld, receivedNew string
+	failPassword := false
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v1/auth/login" {
+			http.SetCookie(w, &http.Cookie{Name: "gocms_user", Value: "token-abc", Path: "/"})
+			_, _ = w.Write([]byte(`{"data":{"user":{"id":1,"username":"alice"}}}`))
+			return
+		}
+		if r.URL.Path == "/api/v1/me" {
+			_, _ = w.Write([]byte(`{"data":{"id":1,"username":"alice"}}`))
+			return
+		}
+		if r.URL.Path == "/api/v1/me/memberships" {
+			_, _ = w.Write([]byte(`{"data":[]}`))
+			return
+		}
+		if r.URL.Path == "/api/v1/me/password" && r.Method == http.MethodPut {
+			if failPassword {
+				w.WriteHeader(400)
+				_, _ = w.Write([]byte(`{"error":{"code":"invalid_password","message":"原密码错误"}}`))
+				return
+			}
+			var in struct {
+				Old string `json:"old_password"`
+				New string `json:"new_password"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&in)
+			receivedOld = in.Old
+			receivedNew = in.New
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"data":{"reauthenticate":true}}`))
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+
+	store := &memoryStore{}
+	m, err := NewWithStore(srv.URL, "takealot-vip", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. 未登录
+	if err := m.ChangePassword(ctx, "old", "newpassword123"); err == nil {
+		t.Fatal("expected unauthorized error")
+	}
+
+	// 登录
+	if _, err := m.Login(ctx, "alice", "oldpwd"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. 校验参数
+	if err := m.ChangePassword(ctx, "", "newpassword123"); err == nil {
+		t.Fatal("expected empty old password error")
+	}
+	if err := m.ChangePassword(ctx, "old", "123"); err == nil {
+		t.Fatal("expected short new password error")
+	}
+
+	// 3. 原密码错误
+	failPassword = true
+	if err := m.ChangePassword(ctx, "wrong", "newpassword123"); err == nil {
+		t.Fatal("expected error on wrong old password")
+	}
+	failPassword = false
+
+	// 4. 成功修改密码
+	if err := m.ChangePassword(ctx, "oldpwd", "newpassword123"); err != nil {
+		t.Fatalf("unexpected change password error: %v", err)
+	}
+	if receivedOld != "oldpwd" || receivedNew != "newpassword123" {
+		t.Fatalf("wrong payload received: %s, %s", receivedOld, receivedNew)
+	}
+	if m.IsValid() || store.token != "" {
+		t.Fatal("session should be cleared after password change")
+	}
+}
