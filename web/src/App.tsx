@@ -175,12 +175,36 @@ export const App: React.FC = () => {
     }
   }
 
-  // 启动 2.5 秒后静默检查更新
+  // 启动静默检查以及每日早上 10:00 自动检查更新
   useEffect(() => {
-    const timer = setTimeout(() => {
+    // 1. 软件启动 2.5 秒后静默检查一次
+    const initialTimer = setTimeout(() => {
       checkForUpdate(false)
     }, 2500)
-    return () => clearTimeout(timer)
+
+    // 2. 每日早上 10:00 定时检查逻辑（具备抗休眠唤醒漂移机制）
+    let lastCheckedDate = ''
+    const checkDailyTenAM = () => {
+      const now = new Date()
+      const year = now.getFullYear()
+      const month = String(now.getMonth() + 1).padStart(2, '0')
+      const day = String(now.getDate()).padStart(2, '0')
+      const todayDateStr = `${year}-${month}-${day}`
+
+      // 当本地时间到达或超过 10:00 且当天尚未触发过时执行
+      if (now.getHours() >= 10 && lastCheckedDate !== todayDateStr) {
+        lastCheckedDate = todayDateStr
+        checkForUpdate(false)
+      }
+    }
+
+    // 每分钟轮询一次时间，无性能损耗且能有效应对挂机休眠恢复
+    const dailyTimer = setInterval(checkDailyTenAM, 60 * 1000)
+
+    return () => {
+      clearTimeout(initialTimer)
+      clearInterval(dailyTimer)
+    }
   }, [version])
 
   // When currentStoreId changes, refresh status
