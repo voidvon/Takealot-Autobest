@@ -1,138 +1,85 @@
 package reporter
 
 import (
-	"encoding/json"
-	"io"
-	"net/http"
-	"net/http/httptest"
-	"os"
-	"path/filepath"
-	"sync/atomic"
+	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 )
 
-func TestLoadConfigFromDotKey(t *testing.T) {
-	tempDir := t.TempDir()
-	keyFile := filepath.Join(tempDir, ".api.key")
-	content := `
-# 注释行
-XIAN_URL=https://test.0122.vip/
-XIAN_SITE_ID=99
-XIAN_API_KEY=cms_live_test_key_123
-`
-	if err := os.WriteFile(keyFile, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
+type feedbackCall struct{ title, content string }
+type feedbackStub struct {
+	calls chan feedbackCall
+	err   error
+}
 
-	cfg := DefaultConfig()
-	LoadConfigFromDotKey(keyFile, &cfg)
-
-	if cfg.BaseURL != "https://test.0122.vip" {
-		t.Errorf("expected BaseURL https://test.0122.vip, got %s", cfg.BaseURL)
-	}
-	if cfg.SiteID != "99" {
-		t.Errorf("expected SiteID 99, got %s", cfg.SiteID)
-	}
-	if cfg.APIKey != "cms_live_test_key_123" {
-		t.Errorf("expected APIKey cms_live_test_key_123, got %s", cfg.APIKey)
+func (s *feedbackStub) SubmitFeedback(ctx context.Context, title, content string) error {
+	s.calls <- feedbackCall{title, content}
+	return s.err
+}
+func receiveCall(t *testing.T, calls <-chan feedbackCall) feedbackCall {
+	t.Helper()
+	select {
+	case call := <-calls:
+		return call
+	case <-time.After(time.Second):
+		t.Fatal("feedback was not submitted")
+		return feedbackCall{}
 	}
 }
 
-func TestCMSReporterPostContent(t *testing.T) {
-	var receivedHeaderKey, receivedSiteID string
-	var receivedPayload contentPayload
-
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedHeaderKey = r.Header.Get("X-API-Key")
-		receivedSiteID = r.Header.Get("X-Site-Id")
-
-		body, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(body, &receivedPayload)
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	defer ts.Close()
-
-	cfg := Config{
-		BaseURL:              ts.URL,
-		SiteID:               "2",
-		APIKey:               "cms_live_secret",
-		CloudflareCategoryID: 1235,
-		PriceFetchCategoryID: 1236,
-		RateLimitDuration:    time.Minute,
+func TestReportsSubmitFeedbackAndRateLimitPerStoreAndType(t *testing.T) {
+	s := &feedbackStub{calls: make(chan feedbackCall, 10)}
+	r := New(s, nil)
+	r.ReportCloudflareBlock("店铺A", "1001", "PLID123", "HTTP 403")
+	call := receiveCall(t, s.calls)
+	for _, want := range []string{"Cloudflare拦截", "店铺A", "1001", "PLID123"} {
+		if !strings.Contains(call.title, want) {
+			t.Errorf("title missing %s: %s", want, call.title)
+		}
 	}
-	r := New(cfg)
-
-	err := r.postContent(1235, "测试标题", "测试摘要", "<b>测试内容</b>")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	for _, want := range []string{"HTTP 403", "https://api.takealot.com/rest/v-1-16-0/product-details/PLID123", "本轮已暂停该商品调价"} {
+		if !strings.Contains(call.content, want) {
+			t.Errorf("content missing %s", want)
+		}
 	}
-
-	if receivedHeaderKey != "cms_live_secret" {
-		t.Errorf("expected header cms_live_secret, got %s", receivedHeaderKey)
-	}
-	if receivedSiteID != "2" {
-		t.Errorf("expected site id 2, got %s", receivedSiteID)
-	}
-	if receivedPayload.CategoryID != 1235 || receivedPayload.Title != "测试标题" {
-		t.Errorf("unexpected payload: %+v", receivedPayload)
+	r.ReportCloudflareBlock("店铺A", "1001", "PLID123", "duplicate")
+	// 同一商品在其他店铺或另一种异常类别应单独反馈。
+	r.ReportCloudflareBlock("店铺B", "1001", "PLID123", "other store")
+	r.ReportPriceFetchError("店铺A", "1001", "PLID123", "HTTP 500")
+	for i := 0; i < 2; i++ {
+		call := receiveCall(t, s.calls)
+		if strings.Contains(call.content, "duplicate") {
+			t.Fatal("duplicate feedback sent")
+		}
 	}
 }
 
-func TestCMSReporterRateLimit(t *testing.T) {
-	var requestCount int32
-	done := make(chan struct{}, 5)
-
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&requestCount, 1)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"ok":true}`))
-		done <- struct{}{}
-	}))
-	defer ts.Close()
-
-	cfg := Config{
-		BaseURL:              ts.URL,
-		SiteID:               "2",
-		APIKey:               "cms_live_secret",
-		CloudflareCategoryID: 1235,
-		PriceFetchCategoryID: 1236,
-		RateLimitDuration:    500 * time.Millisecond,
+func TestRateLimitExpires(t *testing.T) {
+	r := New(nil, nil)
+	if r.shouldRateLimit("product") || !r.shouldRateLimit("product") {
+		t.Fatal("duplicate not suppressed")
 	}
-	r := New(cfg)
+	r.lastReport["product"] = time.Now().Add(-16 * time.Minute)
+	if r.shouldRateLimit("product") {
+		t.Fatal("expired window suppressed report")
+	}
+}
 
-	// 第一次上报，应该触发
-	r.ReportCloudflareBlock("店铺A", "1001", "PLID123", "403 Forbidden")
-
-	// 紧接着第二次同 PLID+TSIN 上报，应被频率限制过滤
-	r.ReportCloudflareBlock("店铺A", "1001", "PLID123", "403 Forbidden")
-
+func TestFeedbackFailureIsReported(t *testing.T) {
+	s := &feedbackStub{calls: make(chan feedbackCall, 1), err: errors.New("HTTP 400: captcha is required")}
+	failures := make(chan error, 1)
+	r := New(s, func(err error) { failures <- err })
+	r.ReportPriceFetchError("店铺A", "1001", "PLID123", "HTTP 500")
 	select {
-	case <-done:
+	case err := <-failures:
+		for _, want := range []string{"信息反馈提交失败", "店铺A", "1001", "PLID123", "captcha is required"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("failure missing %s: %v", want, err)
+			}
+		}
 	case <-time.After(time.Second):
-		t.Fatal("timeout waiting for first report")
-	}
-
-	time.Sleep(50 * time.Millisecond)
-	if count := atomic.LoadInt32(&requestCount); count != 1 {
-		t.Fatalf("expected 1 request due to rate limit, got %d", count)
-	}
-
-	// 等待限流窗口过期
-	time.Sleep(550 * time.Millisecond)
-
-	// 第三次上报，应该再次触发
-	r.ReportCloudflareBlock("店铺A", "1001", "PLID123", "403 Forbidden")
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("timeout waiting for report after rate limit expiry")
-	}
-
-	if count := atomic.LoadInt32(&requestCount); count != 2 {
-		t.Fatalf("expected 2 requests after expiry, got %d", count)
+		t.Fatal("feedback error was discarded")
 	}
 }

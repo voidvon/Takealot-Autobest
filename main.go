@@ -22,6 +22,7 @@ import (
 	"takealot/pkg/config"
 	"takealot/pkg/db"
 	"takealot/pkg/engine"
+	"takealot/pkg/reporter"
 	"takealot/pkg/server"
 	"takealot/pkg/updater"
 
@@ -141,6 +142,9 @@ func main() {
 
 	// 5. Initialize Automation Engine
 	eng := engine.NewEngine(cfgMgr, clientPool, database, accountMgr)
+	eng.SetReporter(reporter.New(accountMgr, func(err error) {
+		eng.Log(err.Error(), "WARN")
+	}))
 
 	go accountMgr.Run(accountCtx, func() { eng.StopAll() })
 
