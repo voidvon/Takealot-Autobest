@@ -159,6 +159,7 @@ export interface EngineStatus {
   store_name?: string
   is_running: boolean
   is_paused: boolean
+  verification_required?: boolean
   total_checked: number
   total_repriced: number
   countdown_seconds: number

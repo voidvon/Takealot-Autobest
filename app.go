@@ -4,6 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"takealot/pkg/account"
+	"takealot/pkg/browsersession"
+	"takealot/pkg/db"
+	"takealot/pkg/engine"
 	"time"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -11,7 +15,11 @@ import (
 
 // App struct manages desktop window lifecycle
 type App struct {
-	ctx context.Context
+	ctx             context.Context
+	browserSessions *browsersession.Manager
+	database        *db.DB
+	engine          *engine.Engine
+	account         *account.Manager
 }
 
 // NewApp creates a new App application struct
@@ -27,6 +35,12 @@ func (a *App) startup(ctx context.Context) {
 
 // shutdown is called at application termination
 func (a *App) shutdown(ctx context.Context) {
+	if a.engine != nil {
+		a.engine.StopAll()
+	}
+	if a.browserSessions != nil {
+		a.browserSessions.Close()
+	}
 }
 
 // ExportLogs opens a native save dialog because embedded webviews do not

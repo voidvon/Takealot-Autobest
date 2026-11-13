@@ -40,7 +40,7 @@ var distEmbedFS embed.FS
 var staticHTML []byte
 
 var (
-	Version    = "0.2.0"
+	Version    = "0.1.17"
 	BuildMode  = "development" // "development" 或 "production" (构建时通过 ldflags 注入)
 	ProdCMSURL = "https://takealot.0122.vip"
 	DevCMSURL  = "https://takealot.0122.vip"
@@ -164,6 +164,12 @@ func main() {
 	}
 	srv := server.NewServer(cfgMgr, clientPool, eng, database, accountMgr, updaterMgr, distSubFS, staticHTML, Version)
 
+	app := NewApp()
+	if err := app.configureBrowserSessions(database, eng, accountMgr); err != nil {
+		log.Fatalf("初始化访问会话失败: %v", err)
+	}
+	clientPool.SetRequestTransport(app.browserSessions.Do)
+
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 	url := fmt.Sprintf("http://%s", addr)
 
@@ -197,7 +203,6 @@ func main() {
 	}
 
 	// 7. Desktop GUI 模式 (Wails 原生桌面窗口)
-	app := NewApp()
 
 	err = wails.Run(&options.App{
 		Title:           "Takealot 掌柜",
@@ -214,6 +219,7 @@ func main() {
 		},
 		BackgroundColour: &options.RGBA{R: 248, G: 250, B: 252, A: 1},
 		OnStartup:        app.startup,
+		OnDomReady:       app.domReady,
 		OnShutdown:       app.shutdown,
 		Bind: []interface{}{
 			app,

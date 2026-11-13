@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -367,5 +368,85 @@ func TestFollowUploadInvalidJSON(t *testing.T) {
 				t.Fatalf("unexpected error response: %+v", result)
 			}
 		})
+	}
+}
+
+func TestQuickPriceUpdateDoesNotReportSuccessOrChangeCacheWhenVerificationRequired(t *testing.T) {
+	database, err := db.New(filepath.Join(t.TempDir(), "session.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	store, err := database.EnsureDefaultStore("test", 1, 1, 5, 1, 1000, 120)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = database.SaveStoreCachedOffers(store.ID, []db.CachedOffer{{Key: "123/456", TSINID: "123", SellingPrice: 200, RRP: 240}}); err != nil {
+		t.Fatal(err)
+	}
+	pool := api.NewClientPool()
+	calls := 0
+	pool.SetRequestTransport(func(_, _ string, _ *http.Request, _ func(*http.Request) (*http.Response, error)) (*http.Response, error) {
+		calls++
+		return nil, &api.VerificationRequiredError{Message: "need verification"}
+	})
+	eng := engine.NewEngine(nil, pool, database, nil)
+	srv := NewServer(nil, pool, eng, database, nil, nil, nil, nil, "test")
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8000/api/fulfillment/offer/quick-update", strings.NewReader(`{"offer_id":"123","selling_price":180,"rrp":220}`))
+	req.Header.Set("X-Store-Id", store.ID)
+	recorder := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusBadGateway || calls != 1 {
+		t.Fatalf("write failure hidden: code=%d calls=%d body=%s", recorder.Code, calls, recorder.Body.String())
+	}
+	cached, err := database.LoadStoreCachedOffers(store.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cached) != 1 || cached[0].SellingPrice != 200 || cached[0].RRP != 240 {
+		t.Fatalf("failed write changed local price: %+v", cached)
+	}
+}
+
+func TestQuickPriceUpdateResolvesTSINToSellerOfferBeforePatch(t *testing.T) {
+	database, err := db.New(filepath.Join(t.TempDir(), "session.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	store, err := database.EnsureDefaultStore("test", 1, 1, 5, 1, 1000, 120)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = database.SaveStoreCachedOffers(store.ID, []db.CachedOffer{{Key: "123/456", TSINID: "123", SellingPrice: 200, RRP: 240}}); err != nil {
+		t.Fatal(err)
+	}
+	pool := api.NewClientPool()
+	calls := 0
+	pool.SetRequestTransport(func(_, _ string, request *http.Request, _ func(*http.Request) (*http.Response, error)) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			if request.Method != "GET" || request.URL.Query().Get("tsin_id") != "123" {
+				t.Fatalf("missing TSIN identity lookup: %s", request.URL)
+			}
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"offers":[{"offer_id":987,"tsin_id":123}]}`))}, nil
+		}
+		if calls != 2 || request.Method != "PATCH" || request.URL.Path != "/v2/offers/offer/987" {
+			t.Fatalf("write did not use seller Offer ID: %s %s", request.Method, request.URL)
+		}
+		return &http.Response{StatusCode: 204, Body: http.NoBody}, nil
+	})
+	eng := engine.NewEngine(nil, pool, database, nil)
+	srv := NewServer(nil, pool, eng, database, nil, nil, nil, nil, "test")
+	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8000/api/fulfillment/offer/quick-update", strings.NewReader(`{"tsin":"123","selling_price":180,"rrp":220}`))
+	request.Header.Set("X-Store-Id", store.ID)
+	recorder := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || calls != 2 {
+		t.Fatalf("quick update failed: %d %s calls=%d", recorder.Code, recorder.Body.String(), calls)
+	}
+	cached, err := database.LoadStoreCachedOffers(store.ID)
+	if err != nil || len(cached) != 1 || cached[0].SellingPrice != 180 {
+		t.Fatalf("TSIN cache not updated: %+v %v", cached, err)
 	}
 }

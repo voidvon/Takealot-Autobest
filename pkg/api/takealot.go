@@ -31,11 +31,12 @@ type Client struct {
 // Context-scoped clients share credentials, transport and rate limits, but
 // stopping a worker must not cancel unrelated requests from the control panel.
 type clientState struct {
-	mu            sync.RWMutex
-	authorization string
-	proxyURL      string
-	httpClient    *http.Client
-	logger        func(message, level string)
+	mu               sync.RWMutex
+	authorization    string
+	proxyURL         string
+	httpClient       *http.Client
+	logger           func(message, level string)
+	requestTransport RequestTransport
 
 	rateMu      sync.Mutex
 	lastReqTime time.Time
@@ -135,9 +136,41 @@ func (c *Client) getAuth() string {
 
 // ClientPool 提供按店铺 store_id 缓存与复用 Client 的管理器
 type ClientPool struct {
-	mu      sync.RWMutex
-	clients map[string]*Client
-	logger  func(storeID, message, level string)
+	mu        sync.RWMutex
+	clients   map[string]*Client
+	logger    func(storeID, message, level string)
+	transport RequestTransport
+}
+
+// RequestTransport preserves the existing retry and rate-limit layer while
+// selecting a persistent, per-store browser session when the user enables it.
+type RequestTransport func(storeID, proxy string, req *http.Request, direct func(*http.Request) (*http.Response, error)) (*http.Response, error)
+
+type VerificationRequiredError struct{ Message string }
+
+func (e *VerificationRequiredError) Error() string { return e.Message }
+func (e *VerificationRequiredError) NoRetry() bool { return true }
+
+func (p *ClientPool) SetRequestTransport(transport RequestTransport) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.transport = transport
+	for id, c := range p.clients {
+		p.setClientTransport(id, c)
+	}
+}
+
+func (p *ClientPool) setClientTransport(id string, c *Client) {
+	transport := p.transport
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if transport == nil {
+		c.requestTransport = nil
+		return
+	}
+	c.requestTransport = func(_ string, proxy string, req *http.Request, direct func(*http.Request) (*http.Response, error)) (*http.Response, error) {
+		return transport(id, proxy, req, direct)
+	}
 }
 
 // SetLogger also covers clients created before the engine was initialized.
@@ -176,6 +209,7 @@ func (p *ClientPool) Set(storeID string, client *Client) {
 	defer p.mu.Unlock()
 	p.clients[storeID] = client
 	p.setClientLogger(storeID, client)
+	p.setClientTransport(storeID, client)
 }
 
 func (p *ClientPool) Remove(storeID string) {
@@ -196,6 +230,7 @@ func (p *ClientPool) GetOrCreate(storeID, auth, proxyURL string) *Client {
 	}
 	c := NewClient(auth, proxyURL)
 	p.setClientLogger(storeID, c)
+	p.setClientTransport(storeID, c)
 	p.clients[storeID] = c
 	return c
 }
@@ -206,7 +241,7 @@ func (c *Client) setHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", UserAgent)
 	auth := c.getAuth()
-	if auth != "" {
+	if auth != "" && req.URL.Host == "seller-api.takealot.com" {
 		req.Header.Set("authorization", auth)
 	}
 }
@@ -281,6 +316,9 @@ func retryAfterDelay(header string, now time.Time) time.Duration {
 // doRequest 封装了发包速率控制、请求头注入以及对 HTTP 420 (Rate Limit Exceeded) 的自动退避重试
 func (c *Client) doRequest(method, urlStr string, body []byte) (*http.Response, error) {
 	maxRetries := 3
+	if method != http.MethodGet && method != http.MethodHead {
+		maxRetries = 0
+	}
 	baseDelay := 1500 * time.Millisecond
 	endpoint, err := url.Parse(urlStr)
 	if err != nil {
@@ -306,11 +344,26 @@ func (c *Client) doRequest(method, urlStr string, body []byte) (*http.Response, 
 
 		c.mu.RLock()
 		httpClient := c.httpClient
+		transport, proxy := c.requestTransport, c.proxyURL
 		c.mu.RUnlock()
-		resp, err := httpClient.Do(req)
+		var resp *http.Response
+		if transport != nil {
+			resp, err = transport("", proxy, req, httpClient.Do)
+		} else {
+			resp, err = httpClient.Do(req)
+		}
 		if err != nil {
 			if c.ctx.Err() != nil {
 				return nil, c.ctx.Err()
+			}
+			var terminal interface{ NoRetry() bool }
+			if errors.As(err, &terminal) && terminal.NoRetry() {
+				return nil, err
+			}
+			// A lost write response may already have changed the price. Do not
+			// replay it blindly; the next cycle must read the current price.
+			if method != http.MethodGet && method != http.MethodHead {
+				return nil, fmt.Errorf("写入请求未确认，请回读平台状态后再操作: %w", err)
 			}
 			if attempt < maxRetries {
 				delay := baseDelay * time.Duration(attempt+1)
@@ -993,6 +1046,23 @@ type OfficialOffersResponse struct {
 	PageNumber   int                 `json:"page_number"`
 	TotalResults int                 `json:"total_results"`
 	Offers       []OfficialOfferItem `json:"offers"`
+}
+
+// Takealot returns catalogue_quality_score as either a number or a string
+// (including an unavailable marker). A display-only score must not prevent
+// loading otherwise valid offers or their real seller Offer IDs.
+func (o *OfficialOfferItem) UnmarshalJSON(data []byte) error {
+	type offer OfficialOfferItem
+	var value struct {
+		*offer
+		Score any `json:"catalogue_quality_score"`
+	}
+	value.offer = (*offer)(o)
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	o.CatalogueQualityScore = AnyToInt(value.Score)
+	return nil
 }
 
 func (c *Client) GetOfficialOffers(page, pageSize int, filter string) (*OfficialOffersResponse, error) {

@@ -1,4 +1,5 @@
 import type { EngineStatus, Store } from '../../types'
+import type { ReactNode } from 'react'
 import { StoreSwitcher } from './StoreSwitcher'
 import { WindowControls } from './WindowControls'
 import { WindowsControls } from './WindowsControls'
@@ -22,6 +23,7 @@ interface HeaderProps {
   onStopAllReprice?: () => void
   updateInfo?: import('../../types').UpdateInfo | null
   onOpenUpdate?: () => void
+  sessionControl?: ReactNode
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -39,6 +41,7 @@ export const Header: React.FC<HeaderProps> = ({
   onStopAllReprice,
   updateInfo,
   onOpenUpdate,
+  sessionControl,
 }) => {
 
   const handleDoubleClick = () => {
@@ -111,6 +114,7 @@ export const Header: React.FC<HeaderProps> = ({
           className="flex items-center gap-2 sm:gap-3 shrink-0"
           style={{ '--wails-draggable': 'no-drag', WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
+          {sessionControl}
           {/* Quick Metrics */}
           <div className="hidden xl:flex items-center gap-4 pr-3 border-r border-border text-xs shrink-0">
             <div className="flex items-center gap-1.5">
@@ -121,7 +125,7 @@ export const Header: React.FC<HeaderProps> = ({
                 </Badge>
               ) : status.is_paused ? (
                 <Badge variant="warning" dot className="text-[10px] h-4.5">
-                  已暂停
+                  {status.verification_required ? '等待验证' : '已暂停'}
                 </Badge>
               ) : (
                 <Badge variant="success" dot className="text-[10px] h-4.5">

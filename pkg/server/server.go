@@ -2469,14 +2469,35 @@ func (s *Server) handleOfferQuickUpdate(w http.ResponseWriter, r *http.Request) 
 		storeID = store.ID
 		storeName = store.Name
 	}
+	cacheIdentifier := strings.TrimSpace(req.TSIN)
+	if cacheIdentifier == "" {
+		cacheIdentifier = targetOfferID
+	}
+	if strings.TrimSpace(req.OfferID) == "" && (req.SellingPrice > 0 || req.WeightKg > 0 || req.LeadtimeStock > 0) {
+		if client == nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "店铺未连接"})
+			return
+		}
+		resolved, err := client.GetOfferIDByTSIN(strings.TrimSpace(req.TSIN))
+		if err != nil {
+			jsonResponse(w, http.StatusBadGateway, map[string]any{"success": false, "error": err.Error()})
+			return
+		}
+		targetOfferID = resolved
+	}
 
 	// 1. 如果有改价
 	if req.SellingPrice > 0 {
-		if client != nil {
-			_ = client.UpdateOfferPrice(targetOfferID, req.SellingPrice, req.RRP)
+		if client == nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "店铺未连接"})
+			return
+		}
+		if err := client.UpdateOfferPrice(targetOfferID, req.SellingPrice, req.RRP); err != nil {
+			jsonResponse(w, http.StatusBadGateway, map[string]any{"success": false, "error": err.Error()})
+			return
 		}
 		if s.db != nil {
-			_ = s.db.UpdateCachedOfferPrice(storeID, targetOfferID, req.SellingPrice, req.RRP)
+			_ = s.db.UpdateCachedOfferPrice(storeID, cacheIdentifier, req.SellingPrice, req.RRP)
 		}
 	}
 
@@ -2506,7 +2527,10 @@ func (s *Server) handleOfferQuickUpdate(w http.ResponseWriter, r *http.Request) 
 			payload["leadtime_stock"] = req.LeadtimeStock
 		}
 		if client != nil {
-			_ = client.UpdateSingleOffer(targetOfferID, payload)
+			if err := client.UpdateSingleOffer(targetOfferID, payload); err != nil {
+				jsonResponse(w, http.StatusBadGateway, map[string]any{"success": false, "error": err.Error()})
+				return
+			}
 		}
 	}
 

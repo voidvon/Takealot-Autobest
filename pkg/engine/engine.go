@@ -26,26 +26,30 @@ type LogEntry struct {
 }
 
 type Status struct {
-	StoreID          string  `json:"store_id"`
-	StoreName        string  `json:"store_name"`
-	IsRunning        bool    `json:"is_running"`
-	IsPaused         bool    `json:"is_paused"`
-	FollowRunning    bool    `json:"follow_running"`
-	LastRunTime      *string `json:"last_run_time"`
-	NextRunTime      *string `json:"next_run_time"`
-	CountdownSeconds int     `json:"countdown_seconds"`
-	TotalChecked     int     `json:"total_checked"`
-	TotalRepriced    int     `json:"total_repriced"`
-	TotalFollowed    int     `json:"total_followed"`
+	StoreID              string  `json:"store_id"`
+	StoreName            string  `json:"store_name"`
+	IsRunning            bool    `json:"is_running"`
+	IsPaused             bool    `json:"is_paused"`
+	VerificationRequired bool    `json:"verification_required"`
+	FollowRunning        bool    `json:"follow_running"`
+	LastRunTime          *string `json:"last_run_time"`
+	NextRunTime          *string `json:"next_run_time"`
+	CountdownSeconds     int     `json:"countdown_seconds"`
+	TotalChecked         int     `json:"total_checked"`
+	TotalRepriced        int     `json:"total_repriced"`
+	TotalFollowed        int     `json:"total_followed"`
 }
 
 type StoreWorker struct {
-	storeID       string
-	mu            sync.RWMutex
-	isRunning     bool
-	isPaused      bool
-	followRunning bool
-	cancelReprice context.CancelFunc
+	storeID              string
+	mu                   sync.RWMutex
+	isRunning            bool
+	isPaused             bool
+	followRunning        bool
+	cancelReprice        context.CancelFunc
+	cancelCycle          context.CancelFunc
+	verificationRequired bool
+	wake                 chan struct{}
 
 	lastRunTime   time.Time
 	nextRunTime   time.Time
@@ -126,6 +130,7 @@ func (e *Engine) getOrCreateWorker(storeID string) *StoreWorker {
 	}
 	w := &StoreWorker{
 		storeID: storeID,
+		wake:    make(chan struct{}, 1),
 	}
 	if e.db != nil {
 		if st, err := e.db.GetStore(storeID); err == nil && st != nil {
@@ -228,6 +233,9 @@ func (e *Engine) PauseReprice(storeID string) (bool, string) {
 	if !w.isRunning {
 		return false, "监控未在运行"
 	}
+	if w.verificationRequired {
+		return false, "请先在访问会话中完成验证并检查连接"
+	}
 	w.isPaused = !w.isPaused
 	statusStr := "已暂停"
 	if !w.isPaused {
@@ -235,6 +243,30 @@ func (e *Engine) PauseReprice(storeID string) (bool, string) {
 	}
 	e.Log(fmt.Sprintf("⏸️ 店铺 [%s] 监控状态变更: %s", w.storeName, statusStr), "WARN", w.storeID, w.storeName)
 	return true, fmt.Sprintf("监控%s", statusStr)
+}
+
+// A verification pause cancels the current calculation. Clearing it only
+// wakes an already-running worker; it never restarts a user-stopped task.
+func (e *Engine) SetVerificationRequired(storeID string, required bool, message string) {
+	w := e.getOrCreateWorker(storeID)
+	w.mu.Lock()
+	changed := w.verificationRequired != required
+	w.verificationRequired = required
+	cancel := w.cancelCycle
+	w.nextRunTime = time.Time{}
+	w.mu.Unlock()
+	if required && cancel != nil {
+		cancel()
+	}
+	if changed {
+		select {
+		case w.wake <- struct{}{}:
+		default:
+		}
+	}
+	if changed {
+		e.Log(message, "INFO", storeID, w.name())
+	}
 }
 
 func (e *Engine) StopReprice(storeID string) (bool, string) {
@@ -348,7 +380,7 @@ func (e *Engine) GetAllStatus() Status {
 
 		if w.isRunning {
 			anyRunning = true
-			if !w.isPaused {
+			if !w.isPaused && !w.verificationRequired {
 				allPaused = false
 				if w.nextRunTime.IsZero() {
 					anyChecking = true
@@ -440,17 +472,18 @@ func (e *Engine) GetStatus(storeID string) Status {
 	}
 
 	return Status{
-		StoreID:          w.storeID,
-		StoreName:        name,
-		IsRunning:        w.isRunning,
-		IsPaused:         w.isPaused,
-		FollowRunning:    w.followRunning,
-		LastRunTime:      lastStr,
-		NextRunTime:      nextStr,
-		CountdownSeconds: countdown,
-		TotalChecked:     w.totalChecked,
-		TotalRepriced:    w.totalRepriced,
-		TotalFollowed:    w.totalFollowed,
+		StoreID:              w.storeID,
+		StoreName:            name,
+		IsRunning:            w.isRunning,
+		IsPaused:             w.isPaused || w.verificationRequired,
+		VerificationRequired: w.verificationRequired,
+		FollowRunning:        w.followRunning,
+		LastRunTime:          lastStr,
+		NextRunTime:          nextStr,
+		CountdownSeconds:     countdown,
+		TotalChecked:         w.totalChecked,
+		TotalRepriced:        w.totalRepriced,
+		TotalFollowed:        w.totalFollowed,
 	}
 }
 
@@ -459,6 +492,23 @@ func (e *Engine) repriceLoop(ctx context.Context, w *StoreWorker) {
 		select {
 		case <-ctx.Done():
 			return
+		default:
+		}
+		w.mu.RLock()
+		paused := w.isPaused || w.verificationRequired
+		w.mu.RUnlock()
+		if paused {
+			timer := time.NewTimer(250 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			continue
+		}
+		select {
+		case <-w.wake:
 		default:
 		}
 
@@ -480,16 +530,28 @@ func (e *Engine) repriceLoop(ctx context.Context, w *StoreWorker) {
 		w.lastRunTime = time.Now()
 		w.nextRunTime = time.Time{} // No countdown while this cycle is still running.
 		isPaused := w.isPaused
+		cycleCtx, cancelCycle := context.WithCancel(ctx)
+		w.cancelCycle = cancelCycle
+		if w.verificationRequired {
+			cancelCycle()
+		}
 		w.mu.Unlock()
 
 		if !isPaused {
-			e.executeRepriceCycle(ctx, w)
+			e.executeRepriceCycle(cycleCtx, w)
 		}
+		cycleCanceled := cycleCtx.Err() != nil
+		cancelCycle()
 
 		w.mu.Lock()
+		w.cancelCycle = nil
 		if ctx.Err() != nil {
 			w.mu.Unlock()
 			return
+		}
+		if w.verificationRequired || cycleCanceled {
+			w.mu.Unlock()
+			continue
 		}
 		w.nextRunTime = time.Now().Add(time.Duration(interval) * time.Minute)
 		nextRun, name := w.nextRunTime, w.storeName
@@ -501,6 +563,8 @@ func (e *Engine) repriceLoop(ctx context.Context, w *StoreWorker) {
 			timer.Stop()
 			return
 		case <-timer.C:
+		case <-w.wake:
+			timer.Stop()
 		}
 	}
 }

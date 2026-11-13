@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { api, getActiveStoreId, setActiveStoreId } from './api/client'
 import type { EngineStatus, Store, AccountStatus, UpdateInfo } from './types'
+import { BrowserSessions } from './components/session/BrowserSessions'
 import { Header } from './components/layout/Header'
 import { Sidebar, type TabId } from './components/layout/Sidebar'
 import { DashboardTab } from './components/dashboard/DashboardTab'
@@ -333,6 +334,7 @@ export const App: React.FC = () => {
       <Header
         version={version}
         status={status}
+        sessionControl={<BrowserSessions stores={stores} currentStoreId={currentStoreId} eligible={!!accountStatus?.eligible} />}
         onStartReprice={handleStartReprice}
         onPauseReprice={handlePauseReprice}
         onStopReprice={handleStopReprice}
