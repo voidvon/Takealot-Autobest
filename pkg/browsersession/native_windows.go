@@ -16,10 +16,64 @@ import (
 	"unsafe"
 
 	"github.com/wailsapp/go-webview2/pkg/edge"
-	wv "github.com/wailsapp/go-webview2/pkg/webview2"
 	"github.com/wailsapp/go-webview2/webviewloader"
 	"golang.org/x/sys/windows"
 )
+
+// coreWebView2Vtbl mirrors the ICoreWebView2 vtable layout from pkg/edge.
+// pkg/webview2 is intentionally not imported: its package-level COM callbacks
+// use Go string parameters, which makes syscall.NewCallback panic on startup.
+type coreWebView2Vtbl struct {
+	QueryInterface                         edge.ComProc
+	AddRef                                 edge.ComProc
+	Release                                edge.ComProc
+	GetSettings                            edge.ComProc
+	GetSource                              edge.ComProc
+	Navigate                               edge.ComProc
+	NavigateToString                       edge.ComProc
+	AddNavigationStarting                  edge.ComProc
+	RemoveNavigationStarting               edge.ComProc
+	AddContentLoading                      edge.ComProc
+	RemoveContentLoading                   edge.ComProc
+	AddSourceChanged                       edge.ComProc
+	RemoveSourceChanged                    edge.ComProc
+	AddHistoryChanged                      edge.ComProc
+	RemoveHistoryChanged                   edge.ComProc
+	AddNavigationCompleted                 edge.ComProc
+	RemoveNavigationCompleted              edge.ComProc
+	AddFrameNavigationStarting             edge.ComProc
+	RemoveFrameNavigationStarting          edge.ComProc
+	AddFrameNavigationCompleted            edge.ComProc
+	RemoveFrameNavigationCompleted         edge.ComProc
+	AddScriptDialogOpening                 edge.ComProc
+	RemoveScriptDialogOpening              edge.ComProc
+	AddPermissionRequested                 edge.ComProc
+	RemovePermissionRequested              edge.ComProc
+	AddProcessFailed                       edge.ComProc
+	RemoveProcessFailed                    edge.ComProc
+	AddScriptToExecuteOnDocumentCreated    edge.ComProc
+	RemoveScriptToExecuteOnDocumentCreated edge.ComProc
+	ExecuteScript                          edge.ComProc
+	CapturePreview                         edge.ComProc
+	Reload                                 edge.ComProc
+	PostWebMessageAsJSON                   edge.ComProc
+	PostWebMessageAsString                 edge.ComProc
+	AddWebMessageReceived                  edge.ComProc
+	RemoveWebMessageReceived               edge.ComProc
+	CallDevToolsProtocolMethod             edge.ComProc
+	GetBrowserProcessID                    edge.ComProc
+	GetCanGoBack                           edge.ComProc
+	GetCanGoForward                        edge.ComProc
+	GoBack                                 edge.ComProc
+	GoForward                              edge.ComProc
+	GetDevToolsProtocolEventReceiver       edge.ComProc
+	Stop                                   edge.ComProc
+	AddNewWindowRequested                  edge.ComProc
+}
+
+func coreVtblOf(core *edge.ICoreWebView2) *coreWebView2Vtbl {
+	return (*coreWebView2Vtbl)(*(*unsafe.Pointer)(unsafe.Pointer(core)))
+}
 
 var user32 = windows.NewLazySystemDLL("user32.dll")
 var ole32 = windows.NewLazySystemDLL("ole32.dll")
@@ -356,8 +410,8 @@ func (d *winDriver) setup(v *winView) error {
 			return err
 		}
 	}
-	core := (*wv.ICoreWebView2)(unsafe.Pointer(v.core))
-	register := func(method wv.ComProc, fn func(uintptr, uintptr) uintptr) error {
+	core := coreVtblOf(v.core)
+	register := func(method edge.ComProc, fn func(uintptr, uintptr) uintptr) error {
 		handler := v.handler(fn)
 		var token int64
 		hr, _, _ := method.Call(uintptr(unsafe.Pointer(v.core)), uintptr(unsafe.Pointer(handler)), uintptr(unsafe.Pointer(&token)))
@@ -367,7 +421,7 @@ func (d *winDriver) setup(v *winView) error {
 		}
 		return nil
 	}
-	if err = register(core.Vtbl.AddNavigationStarting, func(_, args uintptr) uintptr {
+	if err = register(core.AddNavigationStarting, func(_, args uintptr) uintptr {
 		target, e := comString(unsafe.Pointer(args), 3)
 		if e != nil || !allowedNavigation(v.origin, target, false) {
 			_ = callCOM(unsafe.Pointer(args), 8, 1)
@@ -376,7 +430,7 @@ func (d *winDriver) setup(v *winView) error {
 	}); err != nil {
 		return err
 	}
-	if err = register(core.Vtbl.AddFrameNavigationStarting, func(_, args uintptr) uintptr {
+	if err = register(core.AddFrameNavigationStarting, func(_, args uintptr) uintptr {
 		target, e := comString(unsafe.Pointer(args), 3)
 		if e != nil || !allowedNavigation(v.origin, target, true) {
 			_ = callCOM(unsafe.Pointer(args), 8, 1)
@@ -385,7 +439,7 @@ func (d *winDriver) setup(v *winView) error {
 	}); err != nil {
 		return err
 	}
-	if err = register(core.Vtbl.AddNewWindowRequested, func(_, args uintptr) uintptr { _ = callCOM(unsafe.Pointer(args), 6, 1); return 0 }); err != nil {
+	if err = register(core.AddNewWindowRequested, func(_, args uintptr) uintptr { _ = callCOM(unsafe.Pointer(args), 6, 1); return 0 }); err != nil {
 		return err
 	}
 
@@ -434,8 +488,8 @@ func (d *winDriver) protocol(ctx context.Context, id, method string, params any)
 		})
 		methodText, _ := windows.UTF16PtrFromString(method)
 		parameters, _ := windows.UTF16PtrFromString(string(data))
-		core := (*wv.ICoreWebView2)(unsafe.Pointer(v.core))
-		hr, _, _ := core.Vtbl.CallDevToolsProtocolMethod.Call(uintptr(unsafe.Pointer(v.core)), uintptr(unsafe.Pointer(methodText)), uintptr(unsafe.Pointer(parameters)), uintptr(unsafe.Pointer(callback)))
+		core := coreVtblOf(v.core)
+		hr, _, _ := core.CallDevToolsProtocolMethod.Call(uintptr(unsafe.Pointer(v.core)), uintptr(unsafe.Pointer(methodText)), uintptr(unsafe.Pointer(parameters)), uintptr(unsafe.Pointer(callback)))
 		var callErr error
 		if int32(hr) < 0 {
 			callErr = errors.New("WebView2 协议调用失败")
