@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -16,14 +17,35 @@ type PublicVariantSelector struct {
 }
 
 type PublicVariantOption struct {
-	Enabled  bool `json:"is_enabled"`
-	Selected bool `json:"is_selected"`
-	Value    struct {
-		Value any `json:"value"`
-	} `json:"value"`
+	Enabled  bool               `json:"is_enabled"`
+	Selected bool               `json:"is_selected"`
+	Value    PublicVariantValue `json:"value"`
 	LinkData struct {
 		Fields map[string]any `json:"fields"`
 	} `json:"link_data"`
+}
+
+// Colour choices contain {"value":"Black"}, while size choices can be "XS".
+// Keep both forms usable by the TSIN resolver without guessing the variant.
+type PublicVariantValue struct {
+	Value any `json:"value"`
+}
+
+func (v *PublicVariantValue) UnmarshalJSON(raw []byte) error {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return err
+	}
+	if object, ok := value.(map[string]any); ok {
+		value = object["value"]
+	}
+	switch value.(type) {
+	case nil, string, float64:
+		v.Value = value
+		return nil
+	default:
+		return fmt.Errorf("不支持的前台规格值格式")
+	}
 }
 
 // HasOfferPrices rejects aggregate prices and unknown response formats.

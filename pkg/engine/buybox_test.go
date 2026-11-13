@@ -79,3 +79,25 @@ func TestPriceHoldExplainsCap(t *testing.T) {
 		t.Fatalf("cap hold was not explained: %+v", got)
 	}
 }
+
+func TestBuyboxCanLowerWhenOnlyCheaperCompetitorsAreDisplayed(t *testing.T) {
+	bb := &api.PublicBuybox{TSINID: "1", ItemsType: "multi", Items: []api.PublicBuyboxItem{
+		{Price: 80, SellerID: "M456"}, {Price: 90, SellerID: "M789"},
+	}}
+	competitor, solo, reason := buyboxPrices(bb, "1", 123, 100, 0)
+	if competitor != 80 || solo || reason != "" {
+		t.Fatalf("known competitors were rejected because our card was absent: %d %v %s", competitor, solo, reason)
+	}
+	if decision := decidePrice(100, competitor, 80, 85, 150, 1, 1, solo); decision.NewPrice != 85 {
+		t.Fatalf("a lower quote bypassed the floor: %+v", decision)
+	}
+	for _, price := range []int{75, 80} {
+		if _, _, reason := buyboxPrices(bb, "1", 123, price, 2); reason == "" {
+			t.Fatal("missing own card must not justify a raise or a tie-price change")
+		}
+	}
+	bb.Items[0].SellerID = "" // Even a cheap quote is unusable without identity.
+	if _, _, reason := buyboxPrices(bb, "1", 123, 100, 2); reason == "" {
+		t.Fatal("lowering accepted unidentified sellers")
+	}
+}

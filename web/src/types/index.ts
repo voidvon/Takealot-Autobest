@@ -162,7 +162,8 @@ export interface EngineStatus {
   total_checked: number
   total_repriced: number
   countdown_seconds: number
-  last_run_time: string
+  last_run_time: string | null
+  next_run_time?: string | null
 }
 
 export interface LogEntry {

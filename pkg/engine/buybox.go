@@ -19,6 +19,12 @@ func buyboxPrices(bb *api.PublicBuybox, tsinID string, sellerID int64, curPrice,
 		return 0, false, "前台报价缺少卖家身份，本轮暂停调价，避免将自身旧价当成竞品价"
 	}
 	if !ownFound {
+		// Public cards can omit our offer when competitors are cheaper. Exact
+		// TSIN + known foreign seller IDs still establish a safe lower quote;
+		// they cannot establish a complete market or justify a price increase.
+		if competitor > 0 && competitor < curPrice {
+			return competitor, false, ""
+		}
 		return 0, false, fmt.Sprintf("前台未找到卖家 %d 的报价，本轮暂停调价，避免将自身旧价当成竞品价", sellerID)
 	}
 	solo = competing == 1 && bb.ItemsType == "single" && len(bb.Items) == 1

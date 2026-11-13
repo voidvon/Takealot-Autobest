@@ -1,0 +1,132 @@
+{
+  "buybox": {
+    "buybox_items_type": "summary"
+  },
+  "variants": {
+    "selectors": [
+      {
+        "selector_type": "colour_variant",
+        "options": [
+          {
+            "is_enabled": true,
+            "is_selected": false,
+            "value": {
+              "name": "Black",
+              "value": "Black",
+              "type": "colour_variant",
+              "sort_order": null
+            },
+            "link_data": {
+              "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}",
+              "fields": {
+                "api_version": "v-1-16-0",
+                "plid": "PLID98958583",
+                "platform": "desktop",
+                "colour_variant": "Black"
+              }
+            }
+          },
+          {
+            "is_enabled": true,
+            "is_selected": false,
+            "value": {
+              "name": "Pink",
+              "value": "Pink",
+              "type": "colour_variant",
+              "sort_order": null
+            },
+            "link_data": {
+              "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}",
+              "fields": {
+                "api_version": "v-1-16-0",
+                "plid": "PLID98958583",
+                "platform": "desktop",
+                "colour_variant": "Pink"
+              }
+            }
+          },
+          {
+            "is_enabled": true,
+            "is_selected": false,
+            "value": {
+              "name": "Red",
+              "value": "Red",
+              "type": "colour_variant",
+              "sort_order": null
+            },
+            "link_data": {
+              "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}",
+              "fields": {
+                "api_version": "v-1-16-0",
+                "plid": "PLID98958583",
+                "platform": "desktop",
+                "colour_variant": "Red"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "selector_type": "size",
+        "options": [
+          {
+            "is_enabled": true,
+            "is_selected": false,
+            "value": "XS",
+            "link_data": {
+              "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&size={size}",
+              "fields": {
+                "api_version": "v-1-16-0",
+                "plid": "PLID98958583",
+                "platform": "desktop",
+                "size": "XS"
+              }
+            }
+          },
+          {
+            "is_enabled": true,
+            "is_selected": false,
+            "value": "S",
+            "link_data": {
+              "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&size={size}",
+              "fields": {
+                "api_version": "v-1-16-0",
+                "plid": "PLID98958583",
+                "platform": "desktop",
+                "size": "S"
+              }
+            }
+          },
+          {
+            "is_enabled": true,
+            "is_selected": false,
+            "value": "M",
+            "link_data": {
+              "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&size={size}",
+              "fields": {
+                "api_version": "v-1-16-0",
+                "plid": "PLID98958583",
+                "platform": "desktop",
+                "size": "M"
+              }
+            }
+          },
+          {
+            "is_enabled": true,
+            "is_selected": false,
+            "value": "L",
+            "link_data": {
+              "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&size={size}",
+              "fields": {
+                "api_version": "v-1-16-0",
+                "plid": "PLID98958583",
+                "platform": "desktop",
+                "size": "L"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

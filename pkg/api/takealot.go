@@ -2,7 +2,9 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -22,14 +24,23 @@ const (
 )
 
 type Client struct {
+	*clientState
+	ctx context.Context
+}
+
+// Context-scoped clients share credentials, transport and rate limits, but
+// stopping a worker must not cancel unrelated requests from the control panel.
+type clientState struct {
 	mu            sync.RWMutex
 	authorization string
 	proxyURL      string
 	httpClient    *http.Client
+	logger        func(message, level string)
 
 	rateMu      sync.Mutex
 	lastReqTime time.Time
 	minInterval time.Duration
+	cooldowns   map[string]time.Time
 }
 
 func FormatAuth(auth string) string {
@@ -65,11 +76,32 @@ func NewClient(authorization string, proxyURL ...string) *Client {
 	if len(proxyURL) > 0 && strings.TrimSpace(proxyURL[0]) != "" {
 		proxy = strings.TrimSpace(proxyURL[0])
 	}
-	return &Client{
+	return &Client{clientState: &clientState{
 		authorization: FormatAuth(authorization),
 		proxyURL:      proxy,
 		httpClient:    makeHTTPClient(proxy),
 		minInterval:   350 * time.Millisecond, // 默认全局请求间隔不少于 350ms，限制每秒发包量在安全区间
+		cooldowns:     make(map[string]time.Time),
+	}, ctx: context.Background()}
+}
+
+func (c *Client) WithContext(ctx context.Context) *Client {
+	return &Client{clientState: c.clientState, ctx: ctx}
+}
+
+func (c *Client) SetLogger(logger func(message, level string)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.logger = logger
+}
+
+func (c *Client) log(message, level string) {
+	c.mu.RLock()
+	logger := c.logger
+	c.mu.RUnlock()
+	log.Print(message)
+	if logger != nil {
+		logger(message, level)
 	}
 }
 
@@ -105,6 +137,26 @@ func (c *Client) getAuth() string {
 type ClientPool struct {
 	mu      sync.RWMutex
 	clients map[string]*Client
+	logger  func(storeID, message, level string)
+}
+
+// SetLogger also covers clients created before the engine was initialized.
+func (p *ClientPool) SetLogger(logger func(storeID, message, level string)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.logger = logger
+	for id, client := range p.clients {
+		p.setClientLogger(id, client)
+	}
+}
+
+func (p *ClientPool) setClientLogger(storeID string, client *Client) {
+	logger := p.logger
+	if logger != nil {
+		client.SetLogger(func(message, level string) { logger(storeID, message, level) })
+	} else {
+		client.SetLogger(nil)
+	}
 }
 
 func NewClientPool() *ClientPool {
@@ -123,6 +175,7 @@ func (p *ClientPool) Set(storeID string, client *Client) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.clients[storeID] = client
+	p.setClientLogger(storeID, client)
 }
 
 func (p *ClientPool) Remove(storeID string) {
@@ -142,6 +195,7 @@ func (p *ClientPool) GetOrCreate(storeID, auth, proxyURL string) *Client {
 		return c
 	}
 	c := NewClient(auth, proxyURL)
+	p.setClientLogger(storeID, c)
 	p.clients[storeID] = c
 	return c
 }
@@ -157,79 +211,153 @@ func (c *Client) setHeaders(req *http.Request) {
 	}
 }
 
-// waitRateLimit 确保全局向 Takealot 发起的请求保持安全时间间隔，防止突发流量触发 420
-func (c *Client) waitRateLimit() {
-	c.rateMu.Lock()
-	defer c.rateMu.Unlock()
+// Do not hold the rate mutex while sleeping: every waiting worker must be
+// cancellable, including when the upstream server requests a long cooldown.
+func (c *Client) waitRateLimit(key string) error {
+	for {
+		if err := c.ctx.Err(); err != nil {
+			return err
+		}
+		c.rateMu.Lock()
+		interval := c.minInterval
+		if interval <= 0 {
+			interval = 350 * time.Millisecond
+		}
+		due := c.lastReqTime.Add(interval)
+		if cooldown := c.cooldowns[key]; cooldown.After(due) {
+			due = cooldown
+		}
+		if !time.Now().Before(due) {
+			c.lastReqTime = time.Now()
+			c.rateMu.Unlock()
+			return nil
+		}
+		c.rateMu.Unlock()
+		if err := c.wait(time.Until(due)); err != nil {
+			return err
+		}
+	}
+}
 
-	interval := c.minInterval
-	if interval <= 0 {
-		interval = 350 * time.Millisecond
+func (c *Client) wait(delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-c.ctx.Done():
+		return c.ctx.Err()
+	case <-timer.C:
+		return nil
 	}
-	now := time.Now()
-	elapsed := now.Sub(c.lastReqTime)
-	if elapsed < interval {
-		time.Sleep(interval - elapsed)
+}
+
+type RateLimitError struct {
+	StatusCode int
+	RetryAfter time.Duration
+}
+
+type AccessBlockedError struct {
+	StatusCode int
+	Endpoint   string
+}
+
+func (e *AccessBlockedError) Error() string {
+	return fmt.Sprintf("HTTP %d: Cloudflare 访问验证拦截（%s），请检查网络或店铺代理配置；当前无法判断 Key 是否有效", e.StatusCode, e.Endpoint)
+}
+
+func (e *RateLimitError) Error() string {
+	return fmt.Sprintf("HTTP %d: 请求频率超限，自动重试后仍受限，请稍后再试", e.StatusCode)
+}
+
+func retryAfterDelay(header string, now time.Time) time.Duration {
+	if seconds, err := strconv.Atoi(header); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
 	}
-	c.lastReqTime = time.Now()
+	if until, err := http.ParseTime(header); err == nil && until.After(now) {
+		return until.Sub(now)
+	}
+	return 0
 }
 
 // doRequest 封装了发包速率控制、请求头注入以及对 HTTP 420 (Rate Limit Exceeded) 的自动退避重试
 func (c *Client) doRequest(method, urlStr string, body []byte) (*http.Response, error) {
 	maxRetries := 3
 	baseDelay := 1500 * time.Millisecond
+	endpoint, err := url.Parse(urlStr)
+	if err != nil {
+		return nil, err
+	}
+	key := endpoint.Host + endpoint.Path
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
-		c.waitRateLimit()
+		if err := c.waitRateLimit(key); err != nil {
+			return nil, err
+		}
 
 		var bodyReader io.Reader
 		if len(body) > 0 {
 			bodyReader = bytes.NewReader(body)
 		}
 
-		req, err := http.NewRequest(method, urlStr, bodyReader)
+		req, err := http.NewRequestWithContext(c.ctx, method, urlStr, bodyReader)
 		if err != nil {
 			return nil, err
 		}
 		c.setHeaders(req)
 
-		resp, err := c.httpClient.Do(req)
+		c.mu.RLock()
+		httpClient := c.httpClient
+		c.mu.RUnlock()
+		resp, err := httpClient.Do(req)
 		if err != nil {
+			if c.ctx.Err() != nil {
+				return nil, c.ctx.Err()
+			}
 			if attempt < maxRetries {
-				time.Sleep(baseDelay * time.Duration(attempt+1))
+				delay := baseDelay * time.Duration(attempt+1)
+				c.log(fmt.Sprintf("⚠️ [API 网络重试] %s 请求失败，等待 %v 后第 %d 次重试: %v", key, delay, attempt+1, err), "WARN")
+				if err := c.wait(delay); err != nil {
+					return nil, err
+				}
 				continue
 			}
 			return nil, err
 		}
+		if strings.EqualFold(resp.Header.Get("Cf-Mitigated"), "challenge") {
+			resp.Body.Close()
+			blocked := &AccessBlockedError{StatusCode: resp.StatusCode, Endpoint: key}
+			c.log(blocked.Error(), "WARN")
+			return nil, blocked
+		}
 
 		// 重点处理 Takealot 官方特有的 HTTP 420 (Rate Limit Exceeded) 或标准 429
 		if resp.StatusCode == 420 || resp.StatusCode == 429 {
-			retryAfterSec := 0
-			if h := resp.Header.Get("Retry-After"); h != "" {
-				if s, err := strconv.Atoi(h); err == nil && s > 0 {
-					retryAfterSec = s
-				}
+			delay := baseDelay * time.Duration(attempt+1)
+			if retryAfter := retryAfterDelay(resp.Header.Get("Retry-After"), time.Now()); retryAfter > delay {
+				delay = retryAfter
 			}
 			resp.Body.Close()
+			c.rateMu.Lock()
+			if due := time.Now().Add(delay); due.After(c.cooldowns[key]) {
+				c.cooldowns[key] = due
+			}
+			c.rateMu.Unlock()
 
 			if attempt < maxRetries {
-				sleepDuration := baseDelay * time.Duration(attempt+1)
-				if retryAfterSec > 0 {
-					sleepDuration = time.Duration(retryAfterSec) * time.Second
-				}
-				log.Printf("⚠️ [API 限流保护] Takealot 触发频率超限 (HTTP %d)，正在休眠 %v 后进行第 %d 次自动重试: %s",
-					resp.StatusCode, sleepDuration, attempt+1, urlStr)
-				time.Sleep(sleepDuration)
+				c.log(fmt.Sprintf("⚠️ [API 限流保护] Takealot HTTP %d，等待 %v 后第 %d 次重试: %s", resp.StatusCode, delay, attempt+1, key), "WARN")
 				continue
 			}
-			return nil, fmt.Errorf("HTTP %d: Rate Limit Exceeded (请求频率超限，系统已自动重试 %d 次仍受限，请稍后刷新)", resp.StatusCode, maxRetries)
+			return nil, &RateLimitError{StatusCode: resp.StatusCode, RetryAfter: delay}
 		}
 
 		// 临时服务端故障 502/503/504 自动重试
 		if resp.StatusCode == 502 || resp.StatusCode == 503 || resp.StatusCode == 504 {
 			resp.Body.Close()
 			if attempt < maxRetries {
-				time.Sleep(baseDelay * time.Duration(attempt+1))
+				delay := baseDelay * time.Duration(attempt+1)
+				c.log(fmt.Sprintf("⚠️ [API 服务重试] HTTP %d，等待 %v 后第 %d 次重试: %s", resp.StatusCode, delay, attempt+1, key), "WARN")
+				if err := c.wait(delay); err != nil {
+					return nil, err
+				}
 				continue
 			}
 			return nil, fmt.Errorf("HTTP %d: Takealot 官方服务暂时不可用，请稍后再试", resp.StatusCode)
@@ -255,6 +383,10 @@ func (c *Client) TestConnection() TestResult {
 	// 1. Try official /v2/offers/count
 	countUrl := fmt.Sprintf("%s/v2/offers/count", SellerBaseURL)
 	resp, err := c.doRequest("GET", countUrl, nil)
+	var blocked *AccessBlockedError
+	if errors.As(err, &blocked) {
+		return TestResult{Success: false, Message: blocked.Error()}
+	}
 	if err == nil {
 		defer resp.Body.Close()
 		if resp.StatusCode == 200 {
@@ -275,6 +407,9 @@ func (c *Client) TestConnection() TestResult {
 	url := fmt.Sprintf("%s/v2/offers/detailed?page_number=1&page_size=1&status_ids=1&status_ids=2", SellerBaseURL)
 	respDet, err := c.doRequest("GET", url, nil)
 	if err != nil {
+		if errors.As(err, &blocked) {
+			return TestResult{Success: false, Message: blocked.Error()}
+		}
 		return TestResult{Success: false, Message: fmt.Sprintf("网络连接失败: %v", err)}
 	}
 	defer respDet.Body.Close()
@@ -422,7 +557,10 @@ func (c *Client) GetAllOffers(maxItems int) ([]OfferItem, error) {
 
 	for len(allOffers) < maxItems {
 		res, err := c.GetOffersPage(page, pageSize, "")
-		if err != nil || len(res.Offers) == 0 {
+		if err != nil {
+			return allOffers, fmt.Errorf("获取商品第 %d 页失败: %w", page, err)
+		}
+		if len(res.Offers) == 0 {
 			break
 		}
 		allOffers = append(allOffers, res.Offers...)
@@ -430,7 +568,9 @@ func (c *Client) GetAllOffers(maxItems int) ([]OfferItem, error) {
 			break
 		}
 		page++
-		time.Sleep(300 * time.Millisecond)
+		if err := c.wait(300 * time.Millisecond); err != nil {
+			return allOffers, err
+		}
 	}
 
 	if len(allOffers) > maxItems {
@@ -495,15 +635,19 @@ func (c *Client) GetMPVByTSIN(tsinID string) (*MPVResult, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == 200 {
-		var data struct {
-			Results []MPVResult `json:"results"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&data); err == nil && len(data.Results) > 0 {
-			return &data.Results[0], nil
-		}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("MPV 查询失败: HTTP %d", resp.StatusCode)
 	}
-	return nil, fmt.Errorf("mpv not found")
+	var data struct {
+		Results []MPVResult `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("MPV 响应解析失败: %w", err)
+	}
+	if len(data.Results) == 0 {
+		return nil, fmt.Errorf("未找到 TSIN %s 的 MPV 数据", tsinID)
+	}
+	return &data.Results[0], nil
 }
 
 func (c *Client) GetMPVByPLID(plid string) ([]MPVResult, error) {
@@ -625,7 +769,11 @@ func (c *Client) getPublicBuybox(plid, colour, size string) (*PublicBuybox, erro
 		} `json:"variants"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, fmt.Errorf("前台报价响应不是有效 JSON（可能返回了验证页面）: %w", err)
+		var syntax *json.SyntaxError
+		if errors.As(err, &syntax) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return nil, fmt.Errorf("前台报价响应不是有效 JSON（可能返回了验证页面）: %w", err)
+		}
+		return nil, fmt.Errorf("前台报价字段格式无法解析: %w", err)
 	}
 	data.Buybox.Selectors = data.Variants.Selectors
 	return &data.Buybox, nil

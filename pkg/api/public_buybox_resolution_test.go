@@ -78,6 +78,7 @@ func TestPublicBuyboxRejectsBlockedOrInvalidResponses(t *testing.T) {
 	}{
 		{"forbidden", 403, "<html>Verify you are human</html>", "HTTP 403"},
 		{"HTML challenge", 200, "<html>Just a moment</html>", "不是有效 JSON"},
+		{"valid JSON with invalid field type", 200, `{"buybox":{"items":"unexpected"}}`, "字段格式无法解析"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client := NewClient("")
@@ -93,6 +94,60 @@ func TestPublicBuyboxRejectsBlockedOrInvalidResponses(t *testing.T) {
 				t.Fatalf("blocked response should not be retried immediately: %d requests", calls)
 			}
 		})
+	}
+}
+
+func TestResolvePublicBuyboxWithStringSizeValues(t *testing.T) {
+	client := NewClient("")
+	client.minInterval = time.Nanosecond
+	client.httpClient.Transport = offerTestTransport(func(r *http.Request) (*http.Response, error) {
+		body := `{"buybox":{"buybox_items_type":"summary"},"variants":{"selectors":[{"selector_type":"colour_variant","options":[{"is_enabled":true,"value":{"value":"Black"}}]},{"selector_type":"size","options":[{"is_enabled":true,"value":"XS"}]}]}}`
+		if r.URL.Query().Get("colour_variant") == "Black" && r.URL.Query().Get("size") == "XS" {
+			body = `{"buybox":{"tsin":123,"buybox_items_type":"single","items":[{"price":225,"sponsored_ads_seller_id":"M456"}]},"variants":{"selectors":[{"selector_type":"size","options":[{"is_enabled":true,"is_selected":true,"value":"XS"}]}]}}`
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+	initial, err := client.GetPublicBuybox("98958583")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bb, err := client.ResolvePublicBuyboxByTSIN("98958583", "123", initial, nil)
+	if err != nil || !bb.MatchesTSIN("123") {
+		t.Fatalf("string size did not resolve exact TSIN: %+v, %v", bb, err)
+	}
+}
+
+func TestPublicVariantValueFormats(t *testing.T) {
+	for _, tc := range []struct{ raw, want string }{
+		{`{"value":"Black"}`, "Black"}, {`"XS"`, "XS"},
+		{`42`, "42"}, {`null`, ""}, {`{}`, ""},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			var value PublicVariantValue
+			if err := json.Unmarshal([]byte(tc.raw), &value); err != nil || AnyToString(value.Value) != tc.want {
+				t.Fatalf("value=%+v error=%v, want %s", value, err, tc.want)
+			}
+		})
+	}
+}
+
+// Reduced response captured for PLID98958583 on 2026-11-13: sizes are
+// strings and colours are objects in the same otherwise valid JSON response.
+func TestPublicBuyboxParsesCapturedSizeSelectors(t *testing.T) {
+	raw, err := os.ReadFile("testdata/customer_size_selectors.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := NewClient("")
+	client.httpClient.Transport = offerTestTransport(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(raw)))}, nil
+	})
+	bb, err := client.GetPublicBuybox("98958583")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bb.HasOfferPrices() || len(bb.Selectors) != 2 || bb.Selectors[0].Options[0].Value.Value != "Black" || bb.Selectors[1].Options[0].Value.Value != "XS" {
+		t.Fatalf("captured selectors were not preserved: %+v", bb)
 	}
 }
 

@@ -28,6 +28,7 @@ func TestEngineReporterTrigger(t *testing.T) {
 		{"Cloudflare challenge", true},
 		{"前台报价响应不是有效 JSON（可能返回了验证页面）", true},
 		{"HTTP 500: internal error", false},
+		{"前台报价字段格式无法解析: unexpected field type", false},
 	} {
 		t.Run(tc.message, func(t *testing.T) {
 			mock := &mockReporter{}

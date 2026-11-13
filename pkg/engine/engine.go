@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -58,6 +59,12 @@ type MembershipChecker interface {
 	IsValid() bool
 }
 
+func (w *StoreWorker) name() string {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.storeName
+}
+
 type Engine struct {
 	cfgMgr            *config.Manager
 	clientPool        *api.ClientPool
@@ -74,7 +81,7 @@ type Engine struct {
 }
 
 func NewEngine(cfgMgr *config.Manager, clientPool *api.ClientPool, database *db.DB, membershipChecker MembershipChecker) *Engine {
-	return &Engine{
+	e := &Engine{
 		cfgMgr:            cfgMgr,
 		clientPool:        clientPool,
 		db:                database,
@@ -83,6 +90,12 @@ func NewEngine(cfgMgr *config.Manager, clientPool *api.ClientPool, database *db.
 		logs:              make([]LogEntry, 0, 500),
 		subscribers:       make(map[chan LogEntry]struct{}),
 	}
+	if clientPool != nil {
+		clientPool.SetLogger(func(storeID, message, level string) {
+			e.Log(message, level, storeID)
+		})
+	}
+	return e
 }
 
 func (e *Engine) SetReporter(r reporter.Reporter) {
@@ -139,17 +152,13 @@ func (e *Engine) Log(message, level string, storeInfo ...string) {
 	}
 
 	e.logMu.Lock()
+	defer e.logMu.Unlock()
 	if len(e.logs) >= 500 {
 		e.logs = e.logs[1:]
 	}
 	e.logs = append(e.logs, entry)
-	subs := make([]chan LogEntry, 0, len(e.subscribers))
 	for ch := range e.subscribers {
-		subs = append(subs, ch)
-	}
-	e.logMu.Unlock()
-
-	for _, ch := range subs {
+		// Sending is nonblocking and uses the same lock as channel closure.
 		select {
 		case ch <- entry:
 		default:
@@ -168,8 +177,10 @@ func (e *Engine) SubscribeLogs() chan LogEntry {
 func (e *Engine) UnsubscribeLogs(ch chan LogEntry) {
 	e.logMu.Lock()
 	defer e.logMu.Unlock()
-	delete(e.subscribers, ch)
-	close(ch)
+	if _, subscribed := e.subscribers[ch]; subscribed {
+		delete(e.subscribers, ch)
+		close(ch)
+	}
 }
 
 func (e *Engine) GetRecentLogs() []LogEntry {
@@ -322,6 +333,7 @@ func (e *Engine) GetAllStatus() Status {
 	totalFollowed := 0
 	anyRunning := false
 	allPaused := true
+	anyChecking := false
 	minCountdown := 999999
 	var latestLast *time.Time
 	var earliestNext *time.Time
@@ -338,10 +350,13 @@ func (e *Engine) GetAllStatus() Status {
 			anyRunning = true
 			if !w.isPaused {
 				allPaused = false
+				if w.nextRunTime.IsZero() {
+					anyChecking = true
+				}
 			}
 			if !w.nextRunTime.IsZero() {
 				diff := int(time.Until(w.nextRunTime).Seconds())
-				if diff > 0 && diff < minCountdown {
+				if diff >= 0 && diff < minCountdown {
 					minCountdown = diff
 				}
 				if earliestNext == nil || w.nextRunTime.Before(*earliestNext) {
@@ -371,9 +386,12 @@ func (e *Engine) GetAllStatus() Status {
 		s := latestLast.Format("2006-01-02 15:04:05")
 		lastStr = &s
 	}
-	if earliestNext != nil && anyRunning {
+	if earliestNext != nil && anyRunning && !anyChecking {
 		s := earliestNext.Format("2006-01-02 15:04:05")
 		nextStr = &s
+	}
+	if anyChecking {
+		minCountdown = 0
 	}
 
 	return Status{
@@ -452,14 +470,15 @@ func (e *Engine) repriceLoop(ctx context.Context, w *StoreWorker) {
 		}
 
 		if e.membershipChecker != nil && !e.membershipChecker.IsValid() {
-			e.Log(fmt.Sprintf("⚠️ 店铺 [%s] 检测到会员资格失效或无法在线验证，已自动停止调价任务", w.storeName), "ERROR", w.storeID, w.storeName)
+			name := w.name()
+			e.Log(fmt.Sprintf("⚠️ 店铺 [%s] 检测到会员资格失效或无法在线验证，已自动停止调价任务", name), "ERROR", w.storeID, name)
 			e.StopReprice(w.storeID)
 			return
 		}
 
 		w.mu.Lock()
 		w.lastRunTime = time.Now()
-		w.nextRunTime = w.lastRunTime.Add(time.Duration(interval) * time.Minute)
+		w.nextRunTime = time.Time{} // No countdown while this cycle is still running.
 		isPaused := w.isPaused
 		w.mu.Unlock()
 
@@ -467,22 +486,21 @@ func (e *Engine) repriceLoop(ctx context.Context, w *StoreWorker) {
 			e.executeRepriceCycle(ctx, w)
 		}
 
-		sleepDuration := time.Duration(interval) * time.Minute
-		ticker := time.NewTicker(1 * time.Second)
-		startTime := time.Now()
-
-	WaitLoop:
-		for {
-			select {
-			case <-ctx.Done():
-				ticker.Stop()
-				return
-			case <-ticker.C:
-				if time.Since(startTime) >= sleepDuration {
-					ticker.Stop()
-					break WaitLoop
-				}
-			}
+		w.mu.Lock()
+		if ctx.Err() != nil {
+			w.mu.Unlock()
+			return
+		}
+		w.nextRunTime = time.Now().Add(time.Duration(interval) * time.Minute)
+		nextRun, name := w.nextRunTime, w.storeName
+		w.mu.Unlock()
+		e.Log(fmt.Sprintf("⏳ 店铺 [%s] 等待下一轮巡检，计划时间: %s", name, nextRun.Format("15:04:05")), "INFO", w.storeID, name)
+		timer := time.NewTimer(time.Until(nextRun))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
 		}
 	}
 }
@@ -494,15 +512,18 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 
 	store, err := e.db.GetStore(w.storeID)
 	if err != nil || store == nil {
-		e.Log(fmt.Sprintf("❌ 未找到店铺 [%s] 的配置信息", w.storeID), "ERROR", w.storeID, w.storeName)
+		e.Log(fmt.Sprintf("❌ 未找到店铺 [%s] 的配置信息", w.storeID), "ERROR", w.storeID, w.name())
 		return
 	}
 
+	w.mu.Lock()
 	w.storeName = store.Name
-	apiClient := e.clientPool.GetOrCreate(store.ID, store.Authorization, store.ProxyURL)
+	w.mu.Unlock()
+	apiClient := e.clientPool.GetOrCreate(store.ID, store.Authorization, store.ProxyURL).WithContext(ctx)
 
 	targetsMap, err := e.db.LoadStoreTargets(w.storeID)
 	if err != nil {
+		e.Log(fmt.Sprintf("读取监控商品失败: %v", err), "ERROR", store.ID, store.Name)
 		return
 	}
 
@@ -525,6 +546,9 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 	// 卖家后台的 merchant SKU 与前台数字 SKU 不同，必须获取真实卖家 ID。
 	var sellerID int64
 	seller, sellerErr := apiClient.GetSellerInfo()
+	if ctx.Err() != nil {
+		return
+	}
 	if sellerErr == nil && seller != nil {
 		sellerID = seller.SellerID
 	}
@@ -534,9 +558,11 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 	}
 
 	// 缓存店铺在线名称
-	if w.storeName == "默认店铺" || w.storeName == "" {
+	if store.Name == "默认店铺" || store.Name == "" {
 		if seller.DisplayName != "" {
+			w.mu.Lock()
 			w.storeName = seller.DisplayName
+			w.mu.Unlock()
 			store.Name = seller.DisplayName
 			_ = e.db.SaveStore(*store)
 		}
@@ -552,7 +578,13 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 
 	offerMap := make(map[string]api.OfferItem)
 	rawOffers, err := apiClient.GetAllOffers(maxFetch)
-	if err == nil && len(rawOffers) > 0 {
+	if ctx.Err() != nil {
+		return
+	}
+	if err != nil {
+		e.Log(fmt.Sprintf("⚠️ 店铺 [%s] 商品列表未完整获取（已读取 %d 条）: %v", store.Name, len(rawOffers), err), "WARN", store.ID, store.Name)
+	}
+	if len(rawOffers) > 0 {
 		oldCached, _ := e.db.LoadStoreCachedOffers(w.storeID)
 		oldCachedMap := make(map[string]db.CachedOffer, len(oldCached))
 		for _, c := range oldCached {
@@ -596,7 +628,7 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 							activeTargets[tsinStr] = tgt
 						}
 						e.Log(fmt.Sprintf("🛡️ 检测到平台后台零售价外部变动 (TSIN: %s, 原价: R%d -> 现价: R%d)，已按 %.1f 倍自动更新防亏底价为 R%d",
-							tsinStr, oldItem.SellingPrice, curPlatformPrice, storeRatio, newMinPrice), "INFO", w.storeID, w.storeName)
+							tsinStr, oldItem.SellingPrice, curPlatformPrice, storeRatio, newMinPrice), "INFO", w.storeID, store.Name)
 					}
 				}
 			}
@@ -627,6 +659,7 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 	variantCache := make(map[string][]api.CatalogueMPVProduct)
 	publicVariantCache := make(map[string]*api.PublicBuybox)
 	publicErrors := make(map[string]error)
+	mpvRateLimited := false
 
 	for key, target := range activeTargets {
 		select {
@@ -677,7 +710,15 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 			imageURL = o.TSIN.ImageURL
 		} else {
 			offerResp, err := apiClient.GetOffersPage(1, 1, tsinID)
+			if ctx.Err() != nil {
+				return
+			}
 			if err != nil || len(offerResp.Offers) == 0 {
+				e.Log(fmt.Sprintf("⚠️ 无法读取监控商品报价，跳过 TSIN %s: %v", tsinID, err), "WARN", store.ID, store.Name)
+				continue
+			}
+			if curOfferTSIN := api.AnyToString(offerResp.Offers[0].TSINID); curOfferTSIN != tsinID {
+				e.Log(fmt.Sprintf("⚠️ 返回报价的 TSIN %s 与监控 TSIN %s 不符，跳过调价", curOfferTSIN, tsinID), "WARN", store.ID, store.Name)
 				continue
 			}
 			curOffer := offerResp.Offers[0]
@@ -696,7 +737,7 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 
 		owner, err := e.db.ClaimRepriceProduct(w.storeID, tsinID, plid)
 		if err != nil {
-			e.Log(fmt.Sprintf("同链接防竞争校验失败，跳过商品 (TSIN: %s): %v", tsinID, err), "ERROR", w.storeID, w.storeName)
+			e.Log(fmt.Sprintf("同链接防竞争校验失败，跳过商品 (TSIN: %s): %v", tsinID, err), "ERROR", w.storeID, store.Name)
 			continue
 		}
 		if owner != w.storeID {
@@ -704,7 +745,7 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 			if ownerStore, err := e.db.GetStore(owner); err == nil && ownerStore != nil {
 				ownerName = ownerStore.Name
 			}
-			e.Log(fmt.Sprintf("同链接防竞争：商品 (TSIN: %s, PLID: %s) 由店铺 [%s] 负责改价，当前店铺自动跳过", tsinID, plid, ownerName), "INFO", w.storeID, w.storeName)
+			e.Log(fmt.Sprintf("同链接防竞争：商品 (TSIN: %s, PLID: %s) 由店铺 [%s] 负责改价，当前店铺自动跳过", tsinID, plid, ownerName), "INFO", w.storeID, store.Name)
 			continue
 		}
 
@@ -712,12 +753,25 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 		w.totalChecked++
 		w.mu.Unlock()
 
-		mpv, err := apiClient.GetMPVByTSIN(tsinID)
 		bestPrice := 0
 		competing := 0 // 0 表示卖家接口未确认报价数量，不能据此判定独家。
-		if err == nil && mpv != nil {
-			bestPrice = int(mpv.BestPrice)
-			competing = api.AnyToInt(mpv.CompetingOffers)
+		if !mpvRateLimited {
+			mpv, err := apiClient.GetMPVByTSIN(tsinID)
+			if err == nil && mpv != nil {
+				bestPrice = int(mpv.BestPrice)
+				competing = api.AnyToInt(mpv.CompetingOffers)
+			} else if ctx.Err() == nil {
+				var limited *api.RateLimitError
+				if errors.As(err, &limited) {
+					mpvRateLimited = true
+					e.Log("⚠️ 卖家目录查询持续限流，本轮暂停后续 MPV 搜索；继续核对前台报价，无法确认报价完整或独家时跳过调价", "WARN", store.ID, store.Name)
+				} else {
+					e.Log(fmt.Sprintf("⚠️ 卖家目录查询失败 (TSIN: %s): %v", tsinID, err), "WARN", store.ID, store.Name)
+				}
+			}
+		}
+		if ctx.Err() != nil {
+			return
 		}
 
 		// 通过前台商品详情页获取"不含自己"的最低竞品价。
@@ -750,7 +804,7 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 					competitorPrice, soloConfirmed, quoteReason = buyboxPrices(bb, tsinID, sellerID, curPrice, competing)
 					quoteConfirmed = quoteReason == ""
 					if quoteReason != "" {
-						e.Log(fmt.Sprintf("ℹ️ [%s] %s (TSIN: %s)", truncate(title, 20), quoteReason, tsinID), "WARN", w.storeID, w.storeName)
+						e.Log(fmt.Sprintf("ℹ️ [%s] %s (TSIN: %s)", truncate(title, 20), quoteReason, tsinID), "WARN", w.storeID, store.Name)
 					}
 					// 只允许具体 TSIN 的真实报价补充最低价，不采用跨规格的汇总起价。
 					if bestPrice <= 0 && bb.MatchesTSIN(tsinID) {
@@ -758,12 +812,15 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 					}
 				}
 			}
+			if ctx.Err() != nil {
+				return
+			}
 			if bbErr != nil {
-				e.Log(fmt.Sprintf("⚠️ [%s] 获取具体规格竞品报价失败，本轮暂停调价 (TSIN: %s, PLID: %s): %v", truncate(title, 20), tsinID, plid, bbErr), "WARN", w.storeID, w.storeName)
-				e.reportPriceFetchFailure(w.storeName, tsinID, plid, bbErr)
+				e.Log(fmt.Sprintf("⚠️ [%s] 获取具体规格竞品报价失败，本轮暂停调价 (TSIN: %s, PLID: %s): %v", truncate(title, 20), tsinID, plid, bbErr), "WARN", w.storeID, store.Name)
+				e.reportPriceFetchFailure(store.Name, tsinID, plid, bbErr)
 			}
 		} else {
-			e.Log(fmt.Sprintf("⚠️ [%s] 缺少 PLID，无法获取竞品报价，本轮暂停调价 (TSIN: %s)", truncate(title, 20), tsinID), "WARN", w.storeID, w.storeName)
+			e.Log(fmt.Sprintf("⚠️ [%s] 缺少 PLID，无法获取竞品报价，本轮暂停调价 (TSIN: %s)", truncate(title, 20), tsinID), "WARN", w.storeID, store.Name)
 		}
 		if !quoteConfirmed {
 			// bestPrice 也包含自身报价且可能延迟更新，不能用它追降自己的旧价，
@@ -796,7 +853,7 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 			_ = e.db.UpdateStoreSingleMPV(w.storeID, tsinID, refPrice, competing, priority, diff)
 		}
 		if bestPrice <= 0 && competitorPrice <= 0 && !soloConfirmed {
-			e.Log(fmt.Sprintf("[%s] 未获取到竞品价格 (TSIN: %s)", truncate(title, 20), tsinID), "DEBUG", w.storeID, w.storeName)
+			e.Log(fmt.Sprintf("[%s] 未获取到竞品价格 (TSIN: %s)", truncate(title, 20), tsinID), "DEBUG", w.storeID, store.Name)
 			time.Sleep(300 * time.Millisecond)
 			continue
 		}
@@ -806,6 +863,9 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 		actionDesc := decision.Reason
 
 		if newPrice > 0 && newPrice != curPrice {
+			if ctx.Err() != nil {
+				return
+			}
 			rrp := int(float64(newPrice) * rrpRatio)
 			if e.membershipChecker != nil && !e.membershipChecker.IsValid() {
 				return
@@ -819,18 +879,18 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 				if actionType == "" {
 					actionType = "调价"
 				}
-				_ = e.db.RecordStoreReprice(w.storeID, key, tsinID, sku, title, imageURL, w.storeName, actionType, curPrice, newPrice, refPrice, actionDesc)
+				_ = e.db.RecordStoreReprice(w.storeID, key, tsinID, sku, title, imageURL, store.Name, actionType, curPrice, newPrice, refPrice, actionDesc)
 				_ = e.db.UpdateStoreSingleMPV(w.storeID, tsinID, refPrice, competing, "winning", 0)
 				_ = e.db.UpdateCachedOfferPrice(w.storeID, tsinID, newPrice, rrp)
 
 				e.Log(fmt.Sprintf("✅ [调价成功] %s... (TSIN:%s) | 原价: R%d -> 新价: R%d (RRP: R%d) | 原因: %s",
-					truncate(title, 22), tsinID, curPrice, newPrice, rrp, actionDesc), "SUCCESS", w.storeID, w.storeName)
+					truncate(title, 22), tsinID, curPrice, newPrice, rrp, actionDesc), "SUCCESS", w.storeID, store.Name)
 			} else {
-				e.Log(fmt.Sprintf("❌ [调价失败] %s...: %v", truncate(title, 22), err), "ERROR", w.storeID, w.storeName)
+				e.Log(fmt.Sprintf("❌ [调价失败] %s...: %v", truncate(title, 22), err), "ERROR", w.storeID, store.Name)
 			}
 		} else {
 			e.Log(fmt.Sprintf("✓ [%s] 价格保持 R%d (TSIN: %s, 竞品 R%d, 市场最低 R%d, 底价 R%d, 封顶 R%d) | 原因: %s",
-				truncate(title, 20), curPrice, tsinID, competitorPrice, bestPrice, minPrice, target.MaxPrice, actionDesc), "DEBUG", w.storeID, w.storeName)
+				truncate(title, 20), curPrice, tsinID, competitorPrice, bestPrice, minPrice, target.MaxPrice, actionDesc), "DEBUG", w.storeID, store.Name)
 		}
 
 		time.Sleep(300 * time.Millisecond)
@@ -840,7 +900,7 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 	checked := w.totalChecked
 	repriced := w.totalRepriced
 	w.mu.RUnlock()
-	e.Log(fmt.Sprintf("🏁 店铺 [%s] 本轮巡检完成！累计巡检: %d 次，累计改价: %d 次", w.storeName, checked, repriced), "INFO", w.storeID, w.storeName)
+	e.Log(fmt.Sprintf("🏁 店铺 [%s] 本轮巡检完成！累计巡检: %d 次，累计改价: %d 次", store.Name, checked, repriced), "INFO", w.storeID, store.Name)
 }
 
 // resolveVariantBuybox 针对多变体商品，先通过卖家目录接口把我方 TSIN 映射到颜色/尺码，
@@ -916,7 +976,7 @@ func (e *Engine) executeFollowBatch(w *StoreWorker, items []FollowItem) {
 
 	store, err := e.db.GetStore(w.storeID)
 	if err != nil || store == nil {
-		e.Log("❌ 未找到店铺配置", "ERROR", w.storeID, w.storeName)
+		e.Log("❌ 未找到店铺配置", "ERROR", w.storeID, w.name())
 		return
 	}
 	apiClient := e.clientPool.GetOrCreate(store.ID, store.Authorization, store.ProxyURL)
@@ -927,7 +987,7 @@ func (e *Engine) executeFollowBatch(w *StoreWorker, items []FollowItem) {
 
 	for idx, item := range items {
 		if e.membershipChecker != nil && !e.membershipChecker.IsValid() {
-			e.Log("会员验证失效，已停止跟卖任务", "WARN", w.storeID, w.storeName)
+			e.Log("会员验证失效，已停止跟卖任务", "WARN", w.storeID, store.Name)
 			return
 		}
 		urlOrPLID := strings.TrimSpace(item.URL)

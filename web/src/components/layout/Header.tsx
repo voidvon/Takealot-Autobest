@@ -125,7 +125,7 @@ export const Header: React.FC<HeaderProps> = ({
                 </Badge>
               ) : (
                 <Badge variant="success" dot className="text-[10px] h-4.5">
-                  巡检中
+                  {status.next_run_time ? '等待下轮' : '巡检中'}
                 </Badge>
               )}
             </div>
@@ -133,7 +133,9 @@ export const Header: React.FC<HeaderProps> = ({
             <div className="flex items-center gap-1.5">
               <span className="text-muted-foreground text-[11px]">下次轮询:</span>
               <span className="font-mono text-foreground font-semibold text-xs">
-                {status.is_running && !status.is_paused ? formatMinutesSeconds(status.countdown_seconds) : '--:--'}
+                {status.is_running && !status.is_paused
+                  ? status.next_run_time ? formatMinutesSeconds(status.countdown_seconds) : '本轮执行中'
+                  : '--:--'}
               </span>
             </div>
 
