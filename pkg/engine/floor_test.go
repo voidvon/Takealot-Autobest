@@ -72,7 +72,7 @@ func TestRepriceCycleHonorsSavedFloor(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := database.SaveStoreCachedOffers(store.ID, []db.CachedOffer{{Key: key, TSINID: "100368112", PLID: "98946292", SellingPrice: 300}}); err != nil {
+			if err := database.SaveStoreCachedOffers(store.ID, []db.CachedOffer{{Key: key, TSINID: "100368112", PLID: "98946292", SellingPrice: 300, RRP: 999}}); err != nil {
 				t.Fatal(err)
 			}
 			pool := api.NewClientPool()
@@ -86,7 +86,7 @@ func TestRepriceCycleHonorsSavedFloor(t *testing.T) {
 				case "/v2/seller":
 					body = map[string]any{"seller_id": 123, "display_name": "Test store"}
 				case "/v2/offers/detailed":
-					body = map[string]any{"offers": []api.OfferItem{{OfferID: 987, TSINID: 100368112, TSIN: api.TSINInfo{ProductlineID: 98946292, Title: "Head Strap"}, SellingPrice: float64(tc.current)}}}
+					body = map[string]any{"offers": []api.OfferItem{{OfferID: 987, TSINID: 100368112, TSIN: api.TSINInfo{ProductlineID: 98946292, Title: "Head Strap"}, SellingPrice: float64(tc.current), RRP: 999}}}
 				case "/1/catalogue/mpv/search":
 					body = map[string]any{"results": []map[string]any{{"tsinId": 100368112, "bestPrice": tc.competitor, "competingOffers": 2}}}
 				case "/rest/v-1-16-0/product-details/PLID98946292":
@@ -107,10 +107,14 @@ func TestRepriceCycleHonorsSavedFloor(t *testing.T) {
 						t.Fatalf("unexpected write method: %s", req.Method)
 					}
 					var payload struct {
-						SellingPrice int `json:"selling_price"`
+						SellingPrice int  `json:"selling_price"`
+						RRP          *int `json:"rrp"`
 					}
 					if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
 						t.Fatal(err)
+					}
+					if payload.RRP != nil {
+						t.Fatal("automatic repricing must omit RRP")
 					}
 					prices = append(prices, payload.SellingPrice)
 					return &http.Response{StatusCode: http.StatusNoContent, Body: http.NoBody}, nil
@@ -143,7 +147,7 @@ func TestRepriceCycleHonorsSavedFloor(t *testing.T) {
 				t.Fatalf("saved floor changed unexpectedly: %+v, %v", targets, err)
 			}
 			cached, err := database.LoadStoreCachedOffers(store.ID)
-			if err != nil || len(cached) != 1 {
+			if err != nil || len(cached) != 1 || cached[0].RRP != 999 {
 				t.Fatalf("cache: %+v, %v", cached, err)
 			}
 			if tc.wantPrice > tc.competitor && !tc.unidentifiedQuote && cached[0].PriorityStatus != "losing" {

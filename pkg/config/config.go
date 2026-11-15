@@ -25,11 +25,11 @@ type Config struct {
 	Authorization     string            `json:"authorization"`
 	PriceDecreaseStep int               `json:"price_decrease_step"`
 	PriceIncreaseStep int               `json:"price_increase_step"`
-	RRPPercentage     float64           `json:"rrp_percentage"`
+	RRPPercentage     float64           `json:"rrp_percentage"` // Deprecated: retained for old databases; never used to set prices.
 	IntervalMinutes   int               `json:"interval_minutes"`
 	BulkStock         int               `json:"bulk_stock"`
 	MaxFetchOffers    int               `json:"max_fetch_offers"`
-	MinPriceRatio     float64           `json:"min_price_ratio"`
+	MinPriceRatio     float64           `json:"min_price_ratio"` // Deprecated: floors are explicitly configured per variant.
 	Targets           map[string]Target `json:"targets"`
 }
 
@@ -123,9 +123,6 @@ func (m *Manager) Update(newCfg Config) error {
 	}
 	if newCfg.PriceIncreaseStep > 0 {
 		m.cfg.PriceIncreaseStep = newCfg.PriceIncreaseStep
-	}
-	if newCfg.RRPPercentage >= 100 {
-		m.cfg.RRPPercentage = newCfg.RRPPercentage
 	}
 	if newCfg.IntervalMinutes > 0 {
 		m.cfg.IntervalMinutes = newCfg.IntervalMinutes

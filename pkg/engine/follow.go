@@ -306,15 +306,10 @@ func (e *Engine) executeFollowBatch(w *StoreWorker, items []FollowItem) {
 			e.Log(fmt.Sprintf("⚠️ TSIN %s 配置无效: %v", item.TSINID, err), "WARN", store.ID, store.Name)
 			continue
 		}
-		ratio := store.RRPPercentage / 100
-		if ratio < 1 {
-			ratio = 1.2
-		}
-		rrp := int(float64(price) * ratio)
 		if e.membershipChecker != nil && !e.membershipChecker.IsValid() {
 			return
 		}
-		if err := client.CreateOffer(matched.GTIN, price, rrp, -1); err != nil {
+		if err := client.CreateOffer(matched.GTIN, price, -1); err != nil {
 			_ = e.db.RecordStoreFollow(store.ID, item.URL, item.TSINID, plid, matched.GTIN, item.Stock, item.MinPrice, "FAILED", err.Error())
 			e.Log(fmt.Sprintf("❌ TSIN %s 上架失败: %v", item.TSINID, err), "ERROR", store.ID, store.Name)
 			continue
@@ -334,11 +329,11 @@ func (e *Engine) executeFollowBatch(w *StoreWorker, items []FollowItem) {
 		// confirmed platform inventory; only a later platform sync supplies stock.
 		if err := e.db.SaveStoreCachedOffers(store.ID, []db.CachedOffer{{
 			Key: key, TSINID: item.TSINID, PLID: plid, Title: "TSIN " + item.TSINID,
-			SellingPrice: price, RRP: rrp, DateModified: time.Now().UTC().Format(time.RFC3339),
+			SellingPrice: price, DateModified: time.Now().UTC().Format(time.RFC3339),
 		}}); err != nil {
 			e.Log(fmt.Sprintf("⚠️ TSIN %s 已上架并保存底价，但列表缓存保存失败，请同步商品: %v", item.TSINID, err), "WARN", store.ID, store.Name)
 		}
-		message := fmt.Sprintf("售价: R%d, 底价: R%d, 封顶价: R%d, RRP: R%d", price, item.MinPrice, item.MaxPrice, rrp)
+		message := fmt.Sprintf("售价: R%d, 底价: R%d, 封顶价: R%d", price, item.MinPrice, item.MaxPrice)
 		_ = e.db.RecordStoreFollow(store.ID, item.URL, item.TSINID, plid, matched.GTIN, item.Stock, item.MinPrice, "SUCCESS", message)
 		e.Log(fmt.Sprintf("🎉 成功上架 TSIN %s | %s", item.TSINID, message), "SUCCESS", store.ID, store.Name)
 		time.Sleep(1500 * time.Millisecond)

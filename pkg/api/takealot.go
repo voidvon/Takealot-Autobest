@@ -974,11 +974,11 @@ func (b *PublicBuybox) IsSolo(ownSKU string, ownPrice int) bool {
 	return ownPrice > 0 && int(item.Price) == ownPrice
 }
 
-func (c *Client) UpdateOfferPrice(offerID string, sellingPrice, rrp int) error {
+// UpdateOfferPrice changes only the selling price. Omit RRP to preserve the platform value.
+func (c *Client) UpdateOfferPrice(offerID string, sellingPrice int) error {
 	url := fmt.Sprintf("%s/v2/offers/offer/%s", SellerBaseURL, offerID)
 	payload := map[string]int{
 		"selling_price": sellingPrice,
-		"rrp":           rrp,
 	}
 	body, _ := json.Marshal(payload)
 
@@ -995,11 +995,10 @@ func (c *Client) UpdateOfferPrice(offerID string, sellingPrice, rrp int) error {
 	return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBytes))
 }
 
-func (c *Client) CreateOffer(gtin string, sellingPrice, rrp, leadtimeDays int) error {
+func (c *Client) CreateOffer(gtin string, sellingPrice, leadtimeDays int) error {
 	url := fmt.Sprintf("%s/v2/offers/offer/%s", SellerBaseURL, gtin)
 	payload := map[string]int{
 		"selling_price": sellingPrice,
-		"rrp":           rrp,
 		"leadtime_days": leadtimeDays,
 	}
 	body, _ := json.Marshal(payload)

@@ -21,11 +21,11 @@ type Store struct {
 	IsActive          bool    `json:"is_active"`
 	PriceDecreaseStep int     `json:"price_decrease_step"`
 	PriceIncreaseStep int     `json:"price_increase_step"`
-	RRPPercentage     float64 `json:"rrp_percentage"`
+	RRPPercentage     float64 `json:"rrp_percentage"` // Deprecated: retained for old databases; never used to set prices.
 	IntervalMinutes   int     `json:"interval_minutes"`
 	BulkStock         int     `json:"bulk_stock"`
 	MaxFetchOffers    int     `json:"max_fetch_offers"`
-	MinPriceRatio     float64 `json:"min_price_ratio"`
+	MinPriceRatio     float64 `json:"min_price_ratio"` // Deprecated: floors are explicitly configured per variant.
 	ProxyURL          string  `json:"proxy_url"`
 	CreatedAt         string  `json:"created_at"`
 	UpdatedAt         string  `json:"updated_at"`

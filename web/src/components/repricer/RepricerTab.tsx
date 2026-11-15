@@ -41,11 +41,9 @@ function productIdentity(offer: OfferViewModel): string {
 
 export interface RepricerTabProps {
   currentStore?: Store
-  onRefreshStores?: () => Promise<void>
 }
 
-export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefreshStores }) => {
-  const storeRatio = currentStore?.min_price_ratio && currentStore.min_price_ratio > 0 ? currentStore.min_price_ratio : 2.0
+export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore }) => {
 
   const [activeSubTab, setActiveSubTab] = useState<'status' | 'logs'>('status')
   const [loading, setLoading] = useState(false)
@@ -87,9 +85,7 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
     open: boolean
     offer?: OfferViewModel
     newPrice?: number
-    newRrp?: number
-    newMinPrice?: number
-    autoCalcMinPrice?: boolean
+    error?: string
     saving?: boolean
   }>({ open: false })
 
@@ -242,48 +238,33 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
     toast.success('规格价格配置已保存', `已分别更新 ${prices.length} 个规格的底价和封顶价`)
   }
 
-  // Handle manual price edit submit
+  // Selling price changes never recalculate saved limits or write RRP.
   const handleEditPriceSubmit = async () => {
-    if (!editOffer.offer || !editOffer.newPrice) return
-    setEditOffer((prev) => ({ ...prev, saving: true }))
-    try {
-      const payload: Parameters<typeof api.updateOfficialOffer>[1] = {
-        tsin_id: editOffer.offer.tsin_id,
-        min_price: editOffer.newMinPrice,
-        target_key: editOffer.offer.key,
-      }
-      if (editOffer.newPrice !== editOffer.offer.selling_price) payload.selling_price = editOffer.newPrice
-      if (editOffer.newRrp && editOffer.newRrp !== editOffer.offer.rrp) {
-        payload.rrp = editOffer.newRrp
-        payload.selling_price = editOffer.newPrice
-      }
-
-      // The monitoring key contains TSIN/PLID, not the seller's Offer ID.
-      // Resolve the actual offer in the owning store before updating its price.
-      await api.updateOfficialOffer(undefined, payload, editOffer.offer.store_id)
-
-      // Update local offers state immediately
-      setOffers((prev) =>
-        prev.map((o) =>
-          o.key === editOffer.offer!.key && o.store_id === editOffer.offer!.store_id
-            ? {
-                ...o,
-                selling_price: editOffer.newPrice!,
-                rrp: editOffer.newRrp || o.rrp,
-                min_price: editOffer.newMinPrice !== undefined ? editOffer.newMinPrice : o.min_price,
-              }
-            : o
-        )
-      )
-
-      toast.success(
-        '商品售价与防亏底价更新成功！',
-        `售价已更新为 R ${editOffer.newPrice}，防亏底价已同步更新为 R ${editOffer.newMinPrice || 0}`
-      )
+    if (!editOffer.offer || !Number.isSafeInteger(editOffer.newPrice) || !editOffer.newPrice || editOffer.newPrice <= 0) {
+      setEditOffer((prev) => ({ ...prev, error: '请输入大于 0 的整数售价' }))
+      return
+    }
+    const offer = editOffer.offer
+    if ((offer.min_price > 0 && editOffer.newPrice < offer.min_price) || (offer.max_price > 0 && editOffer.newPrice > offer.max_price)) {
+      setEditOffer((prev) => ({ ...prev, error: '售价超出已保存的保护范围，请在自动竞价列表中核对底价和封顶价' }))
+      return
+    }
+    if (editOffer.newPrice === offer.selling_price) {
       setEditOffer({ open: false })
-      loadOffers()
+      return
+    }
+    setEditOffer((prev) => ({ ...prev, saving: true, error: '' }))
+    try {
+      await api.updateOfficialOffer(undefined, {
+        tsin_id: offer.tsin_id,
+        selling_price: editOffer.newPrice,
+        target_key: offer.key,
+      }, offer.store_id)
+      toast.success('商品售价已更新', `售价 R ${editOffer.newPrice}，已保留底价和封顶价`)
+      setEditOffer({ open: false })
+      await loadOffers()
     } catch (err: any) {
-      toast.error('修改价格失败', err.message)
+      setEditOffer((prev) => ({ ...prev, error: err.message || '修改价格失败，请重试' }))
     } finally {
       setEditOffer((prev) => ({ ...prev, saving: false }))
     }
@@ -295,17 +276,10 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
   const losingCount = offers.filter((o) => o.priority_status === 'losing').length
   const soloCount = offers.filter((o) => o.priority_status === 'solo').length
 
-  // Batch min-price modal state
+  // Batch min-price amounts are explicit and independent of market prices.
   const [batchMinPriceModalOpen, setBatchMinPriceModalOpen] = useState(false)
-  const [batchPriceBase, setBatchPriceBase] = useState<'selling_price' | 'rrp'>('rrp')
-  const [batchRatio, setBatchRatio] = useState<number>(storeRatio)
+  const [batchMinPrice, setBatchMinPrice] = useState<number>(0)
   const [batchScope, setBatchScope] = useState<'all' | 'selected'>('all')
-
-  useEffect(() => {
-    if (storeRatio > 0) {
-      setBatchRatio(storeRatio)
-    }
-  }, [storeRatio])
 
   const targetOffers = useMemo(() => {
     if (batchScope === 'selected' && totalMonitored > 0) {
@@ -321,8 +295,14 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
   const targetAllCount = targetOffers.length
 
   const handleApplyBatchMinPrice = (mode: 'empty_only' | 'overwrite_all') => {
-    if (batchRatio <= 0) {
-      toast.warning('请输入大于 0 的有效折算倍数！')
+    if (!Number.isSafeInteger(batchMinPrice) || batchMinPrice <= 0) {
+      toast.warning('请输入大于 0 的整数底价')
+      return
+    }
+    const conflicts = targetOffers.filter((offer) =>
+      (mode === 'overwrite_all' || offer.min_price <= 0) && offer.max_price > 0 && batchMinPrice > offer.max_price)
+    if (conflicts.length > 0) {
+      toast.warning('底价高于已有封顶价', `有 ${conflicts.length} 个规格存在冲突，请分别配置规格价格`)
       return
     }
 
@@ -337,16 +317,10 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
         return o
       }
 
-      const base = batchPriceBase === 'rrp' ? (o.rrp || o.selling_price) : o.selling_price
-      if (!base || base <= 0) {
-        return o
-      }
-
-      const calculatedMin = Math.max(1, Math.round(base / batchRatio))
       updatedCount++
       return {
         ...o,
-        min_price: calculatedMin,
+        min_price: batchMinPrice,
       }
     })
 
@@ -355,17 +329,10 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
       return
     }
 
-    // Also persist batchRatio to store configuration if changed
-    if (currentStore && batchRatio > 0 && batchRatio !== currentStore.min_price_ratio) {
-      api.updateStore({ id: currentStore.id, min_price_ratio: batchRatio }).then(() => {
-        if (onRefreshStores) onRefreshStores()
-      }).catch(console.error)
-    }
-
     setOffers(updated)
     setHasChanges(true)
     setBatchMinPriceModalOpen(false)
-    toast.success('保护底价计算并更新成功', `已为 ${updatedCount} 款商品计算并更新底价，请点击【保存已修改的配置】提交生效`)
+    toast.success('底价已填入列表', `已为 ${updatedCount} 款商品设置底价，请点击【保存已修改的配置】提交生效`)
   }
 
   return (
@@ -391,7 +358,7 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
           className="gap-1.5 text-xs border-blue-500/30 text-blue-600 dark:text-blue-400 hover:bg-blue-500/10"
         >
           <Calculator className="h-3.5 w-3.5" />
-          <span>最低价设置</span>
+          <span>批量设置底价</span>
         </Button>
         <Button
           variant={hasChanges ? 'default' : 'secondary'}
@@ -580,7 +547,7 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
                 </TableHead>
                 <TableHead className="w-16 text-center">商品大图</TableHead>
                 <TableHead className="min-w-[240px]">商品基本信息</TableHead>
-                <TableHead className="text-center">当前售价 / RRP</TableHead>
+                <TableHead className="text-center">实际售价</TableHead>
                 <TableHead className="text-center">竞品最优价 / 差价</TableHead>
                 <TableHead className="text-center min-w-[170px]">防亏底价 / 封顶价</TableHead>
                 <TableHead className="text-center">战况态势</TableHead>
@@ -688,13 +655,10 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
                         </div>
                       </TableCell>
 
-                      {/* Current Selling Price & RRP */}
+                      {/* Current Selling Price */}
                       <TableCell className="text-center">
                         <div className="font-mono font-bold text-foreground text-sm">
                           {formatCurrency(item.selling_price)}
-                        </div>
-                        <div className="font-mono text-[11px] text-muted-foreground line-through">
-                          {item.rrp ? formatCurrency(item.rrp) : '-'}
                         </div>
                         <div className="text-[10px] text-muted-foreground">
                           库存: {item.stock ?? 0}
@@ -803,14 +767,10 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
                           variant="ghost"
                           size="sm"
                           onClick={() => {
-                            const calculatedMin = Math.max(1, Math.round(item.selling_price / storeRatio))
                             setEditOffer({
                               open: true,
                               offer: item,
                               newPrice: item.selling_price,
-                              newRrp: item.rrp,
-                              newMinPrice: item.min_price && item.min_price > 0 ? item.min_price : calculatedMin,
-                              autoCalcMinPrice: !(item.min_price > 0),
                             })
                           }}
                           className="h-8 px-2 text-xs gap-1"
@@ -1005,7 +965,7 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
       <Dialog
         open={editOffer.open}
         onClose={() => setEditOffer({ open: false })}
-        title="手动修改商品售价与防亏底价"
+        title="修改实际售价"
         description={editOffer.offer?.title}
       >
         <div className="space-y-4">
@@ -1016,85 +976,19 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
             <Input
               type="number"
               value={editOffer.newPrice || ''}
-              onChange={(e) => {
-                const val = parseInt(e.target.value) || 0
-                setEditOffer((prev) => {
-                  const autoCalc = prev.autoCalcMinPrice ?? true
-                  const calcMin = autoCalc ? Math.max(1, Math.round(val / storeRatio)) : prev.newMinPrice
-                  return {
-                    ...prev,
-                    newPrice: val,
-                    newMinPrice: calcMin,
-                  }
-                })
-              }}
+              onChange={(e) => setEditOffer((prev) => ({ ...prev, newPrice: Number(e.target.value), error: '' }))}
+              min="1" step="1"
               placeholder="请输入新售价"
             />
           </div>
 
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-foreground">
-              建议零售价 RRP (R)
-            </label>
-            <Input
-              type="number"
-              value={editOffer.newRrp || ''}
-              onChange={(e) =>
-                setEditOffer((prev) => ({ ...prev, newRrp: parseInt(e.target.value) || 0 }))
-              }
-              placeholder="请输入建议零售价"
-            />
-          </div>
+          <p className="text-xs text-muted-foreground">
+            已保存底价：{editOffer.offer?.min_price ? formatCurrency(editOffer.offer.min_price) : '尚未设置'}；
+            封顶价：{editOffer.offer?.max_price ? formatCurrency(editOffer.offer.max_price) : '不限'}。
+            修改售价会保留这些配置；如需调整，请在自动竞价列表中配置。
+          </p>
 
-          <div className="space-y-2 pt-2 border-t border-border">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-semibold text-foreground flex items-center gap-1.5">
-                <span>防亏保护底价 Min Price (R)</span>
-                <span className="text-[11px] font-normal text-muted-foreground">
-                  (店铺折算倍数: {storeRatio}倍)
-                </span>
-              </label>
-              <label className="flex items-center gap-1.5 text-[11px] text-primary cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={editOffer.autoCalcMinPrice ?? true}
-                  onChange={(e) => {
-                    const checked = e.target.checked
-                    setEditOffer((prev) => ({
-                      ...prev,
-                      autoCalcMinPrice: checked,
-                      newMinPrice: checked && prev.newPrice ? Math.max(1, Math.round(prev.newPrice / storeRatio)) : prev.newMinPrice,
-                    }))
-                  }}
-                  className="rounded border-input text-primary focus:ring-primary h-3.5 w-3.5 cursor-pointer"
-                />
-                <span>随售价自动折算</span>
-              </label>
-            </div>
-
-            <Input
-              type="number"
-              value={editOffer.newMinPrice || ''}
-              onChange={(e) => {
-                const val = parseInt(e.target.value) || 0
-                setEditOffer((prev) => ({ ...prev, newMinPrice: val, autoCalcMinPrice: false }))
-              }}
-              placeholder="防亏底价"
-              className="font-mono text-xs"
-            />
-
-            <div className="text-[11px]">
-              {(editOffer.autoCalcMinPrice ?? true) ? (
-                <span className="text-blue-600 dark:text-blue-400">
-                  💡 联动计算已生效：售价 R {editOffer.newPrice || 0} ÷ {storeRatio}倍 ≈ <strong>R {editOffer.newMinPrice || 0}</strong>
-                </span>
-              ) : (
-                <span className="text-muted-foreground">
-                  ✏️ 当前为自定义底价模式（勾选右上角可恢复按 {storeRatio} 倍自动折算）
-                </span>
-              )}
-            </div>
-          </div>
+          {editOffer.error && <p role="alert" className="text-sm text-destructive">{editOffer.error}</p>}
 
           <div className="flex justify-end gap-2 pt-3 border-t border-border">
             <Button variant="outline" size="sm" onClick={() => setEditOffer({ open: false })}>
@@ -1112,88 +1006,20 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
         </div>
       </Dialog>
 
-      {/* Batch Min Price Calculation Modal */}
+      {/* Batch Min Price Modal */}
       <Dialog
         open={batchMinPriceModalOpen}
         onClose={() => setBatchMinPriceModalOpen(false)}
-        title="最低价设置"
-        description="根据商品价格与设置的倍数批量计算最低保护底价（底价 = 原价 ÷ 倍数），防止竞价跌破利润底线。"
+        title="批量设置底价"
+        description="直接填写防亏底价金额，不随售价或参考划线价变化。不同规格成本不同，请优先逐规格配置。"
         maxWidth="md"
       >
         <div className="space-y-4 pt-1">
-          {/* Base Price & Ratio */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-foreground">
-                原价基准来源
-              </label>
-              <select
-                value={batchPriceBase}
-                onChange={(e) => setBatchPriceBase(e.target.value as 'selling_price' | 'rrp')}
-                className="w-full h-9 rounded-md border border-input bg-background px-3 py-1 text-xs text-foreground shadow-xs focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer"
-              >
-                <option value="rrp">建议零售价 RRP (划线价，默认)</option>
-                <option value="selling_price">当前售价 Selling Price</option>
-              </select>
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-foreground">
-                底价折算倍数 (除数)
-              </label>
-              <Input
-                type="number"
-                min="0.1"
-                step="0.1"
-                value={batchRatio || ''}
-                onChange={(e) => setBatchRatio(parseFloat(e.target.value) || 0)}
-                placeholder="例如 2"
-                className="h-9 text-xs font-mono"
-              />
-            </div>
-          </div>
-
-          {/* Quick Ratio Pills */}
-          <div className="flex items-center gap-1.5 text-xs">
-            <span className="text-muted-foreground text-[11px]">常用快捷倍数:</span>
-            {[1.2, 1.5, 1.8, 2.0, 2.5, 3.0].map((r) => (
-              <button
-                key={r}
-                type="button"
-                onClick={() => setBatchRatio(r)}
-                className={cn(
-                  "px-2 py-0.5 rounded border text-[11px] font-mono transition cursor-pointer",
-                  batchRatio === r
-                    ? "bg-primary text-primary-foreground border-primary"
-                    : "bg-muted/50 border-border text-foreground hover:bg-muted"
-                )}
-              >
-                {r}倍
-              </button>
-            ))}
-          </div>
-
-          {/* Calculation Formula Preview */}
-          <div className="rounded-lg bg-blue-50/60 dark:bg-blue-950/30 border border-blue-200/60 dark:border-blue-800/40 p-3 text-xs space-y-1.5">
-            <div className="font-semibold text-blue-900 dark:text-blue-300 flex items-center gap-1.5">
-              <span>📐 计算公式：</span>
-              <code className="bg-blue-100 dark:bg-blue-900/60 px-1.5 py-0.5 rounded text-[11px]">
-                最低保护底价 = {batchPriceBase === 'selling_price' ? '当前售价' : '建议零售价'} ÷ {batchRatio > 0 ? batchRatio : '?'}
-              </code>
-            </div>
-            <div className="text-blue-700 dark:text-blue-400 text-[11px] leading-relaxed">
-              {batchRatio > 0 ? (
-                <span>
-                  💡 示例：商品原价为 <strong>R 300</strong>，设置 <strong>{batchRatio} 倍</strong>，则最低保护底价将设置为{' '}
-                  <strong className="text-blue-950 dark:text-blue-200 text-xs">
-                    R {Math.max(1, Math.round(300 / batchRatio))}
-                  </strong>
-                  。自动竞价引擎跟价降低到此价格后将不会再降，守住利润底线。
-                </span>
-              ) : (
-                <span className="text-rose-500 font-medium">⚠️ 请输入大于 0 的有效倍数</span>
-              )}
-            </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-foreground">防亏底价 (R)</label>
+            <Input type="number" min="1" step="1" value={batchMinPrice || ''}
+              onChange={(e) => setBatchMinPrice(Number(e.target.value))} placeholder="例如 210" />
+            <p className="text-xs text-muted-foreground">填入列表后，点击“保存已修改的配置”生效。不会修改实际售价或封顶价。</p>
           </div>
 
           {/* Target Scope Selection */}
@@ -1252,7 +1078,7 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
               <Button
                 variant="secondary"
                 size="sm"
-                disabled={batchRatio <= 0 || targetEmptyCount === 0}
+                disabled={!Number.isSafeInteger(batchMinPrice) || batchMinPrice <= 0 || targetEmptyCount === 0}
                 onClick={() => handleApplyBatchMinPrice('empty_only')}
                 className="gap-1 text-xs"
                 title="只为当前底价未设置(为空或为0)的商品填充底价，保留已有的底价设置"
@@ -1262,12 +1088,12 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
               <Button
                 variant="default"
                 size="sm"
-                disabled={batchRatio <= 0 || targetAllCount === 0}
+                disabled={!Number.isSafeInteger(batchMinPrice) || batchMinPrice <= 0 || targetAllCount === 0}
                 onClick={() => handleApplyBatchMinPrice('overwrite_all')}
                 className="gap-1 text-xs"
-                title="无论已有底价是多少，全部按当前倍数重新计算覆盖"
+                title="将所选范围的底价统一改为上面填写的金额"
               >
-                <span>全部强制覆盖 ({targetAllCount}款)</span>
+                <span>统一设置底价 ({targetAllCount}款)</span>
               </Button>
             </div>
           </div>

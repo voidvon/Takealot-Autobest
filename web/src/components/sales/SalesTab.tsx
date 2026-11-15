@@ -95,8 +95,7 @@ export const SalesTab: React.FC = () => {
     open: boolean
     item?: LeadtimeOrderItem | ShipmentItemRecord
     sellingPrice: number
-    rrp: number
-  }>({ open: false, sellingPrice: 0, rrp: 0 })
+  }>({ open: false, sellingPrice: 0 })
 
   const [bookingModal, setBookingModal] = useState<{
     open: boolean
@@ -297,13 +296,16 @@ export const SalesTab: React.FC = () => {
   // Save Price
   const handleSavePrice = async () => {
     if (!priceModal.item) return
+    if (!Number.isSafeInteger(priceModal.sellingPrice) || priceModal.sellingPrice <= 0) {
+      toast.warning('请输入大于 0 的整数售价')
+      return
+    }
     try {
       await api.quickUpdateOffer({
         tsin: priceModal.item.tsin,
         selling_price: priceModal.sellingPrice,
-        rrp: priceModal.rrp,
       })
-      setPriceModal({ open: false, sellingPrice: 0, rrp: 0 })
+      setPriceModal({ open: false, sellingPrice: 0 })
       toast.success('已成功同步新价格至 Takealot 官方！')
       loadShipments()
       loadLeadtimeOrders()
@@ -808,7 +810,6 @@ export const SalesTab: React.FC = () => {
                                   open: true,
                                   item,
                                   sellingPrice: item.selling_price,
-                                  rrp: Math.round(item.selling_price * 1.2),
                                 })
                               }
                               className="px-1.5 py-0.5 rounded border border-sky-400 dark:border-sky-600 text-sky-600 dark:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-950 text-[11px]"
@@ -1237,7 +1238,7 @@ export const SalesTab: React.FC = () => {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-3">
             <div className="space-y-1.5">
               <label className="font-medium text-foreground">实际售价 (ZAR 兰特)</label>
               <input
@@ -1245,15 +1246,6 @@ export const SalesTab: React.FC = () => {
                 value={priceModal.sellingPrice}
                 onChange={(e) => setPriceModal((prev) => ({ ...prev, sellingPrice: parseInt(e.target.value) || 0 }))}
                 className="w-full h-8 px-2 border border-input rounded bg-background text-foreground font-mono text-sm font-semibold"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <label className="font-medium text-foreground">建议零售价 RRP (ZAR)</label>
-              <input
-                type="number"
-                value={priceModal.rrp}
-                onChange={(e) => setPriceModal((prev) => ({ ...prev, rrp: parseInt(e.target.value) || 0 }))}
-                className="w-full h-8 px-2 border border-input rounded bg-background text-foreground font-mono"
               />
             </div>
           </div>

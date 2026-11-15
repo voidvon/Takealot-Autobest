@@ -427,10 +427,10 @@ export const App: React.FC = () => {
           )}
 
           {activeTab === 'repricer' && (
-            <RepricerTab currentStore={currentStore} onRefreshStores={loadStores} />
+            <RepricerTab currentStore={currentStore} />
           )}
 
-          {activeTab === 'catalog' && <CatalogTab currentStore={currentStore} />}
+          {activeTab === 'catalog' && <CatalogTab />}
 
           {activeTab === 'sales' && <SalesTab />}
 

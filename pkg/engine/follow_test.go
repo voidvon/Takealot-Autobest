@@ -110,10 +110,14 @@ func TestFollowBatchCreatesOnlySelectedVariantsWithIndependentFloors(t *testing.
 					t.Fatalf("unexpected follow request: %s %s", req.Method, req.URL)
 				}
 				var payload struct {
-					Price int `json:"selling_price"`
+					Price int  `json:"selling_price"`
+					RRP   *int `json:"rrp"`
 				}
 				if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
 					t.Fatal(err)
+				}
+				if payload.RRP != nil {
+					t.Fatal("following must not invent RRP")
 				}
 				writes[req.URL.Path] = payload.Price
 				return &http.Response{StatusCode: 201, Body: http.NoBody}, nil

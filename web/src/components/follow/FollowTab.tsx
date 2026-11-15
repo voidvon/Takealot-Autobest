@@ -76,7 +76,6 @@ export const FollowTab: React.FC<FollowTabProps> = ({ onNavigateLogs }) => {
         {
           offer_id: 226816605,
           selling_price: 650,
-          rrp: 1200,
           leadtime_days: 7,
           status_action: 'Re-enable',
         },
@@ -665,14 +664,14 @@ export const FollowTab: React.FC<FollowTabProps> = ({ onNavigateLogs }) => {
               value={createBatchModal.jsonContent}
               onChange={(e) => setCreateBatchModal((prev) => ({ ...prev, jsonContent: e.target.value }))}
               className="w-full font-mono text-xs p-3 rounded-lg border border-border bg-muted/40 focus:outline-none focus:ring-1 focus:ring-primary"
-              placeholder={`[{"offer_id": 12345, "selling_price": 499, "rrp": 899, "status_action": "Re-enable"}]`}
+              placeholder={`[{"offer_id": 12345, "selling_price": 499, "status_action": "Re-enable"}]`}
             />
           </div>
 
           <div className="p-3 rounded-lg bg-muted/50 text-[11px] text-muted-foreground space-y-1">
             <div className="font-semibold text-foreground">支持的字段参数:</div>
             <div>• <code className="font-mono">offer_id</code> 或 <code className="font-mono">sku</code> 或 <code className="font-mono">barcode</code>：商品识别标志</div>
-            <div>• <code className="font-mono">selling_price</code> (正整数售价), <code className="font-mono">rrp</code> (建议零售价)</div>
+            <div>• <code className="font-mono">selling_price</code> (正整数售价)</div>
             <div>• <code className="font-mono">leadtime_days</code> (发货准备天数, -1为移除)</div>
             <div>• <code className="font-mono">status_action</code>: "Disable" (停售) 或 "Re-enable" (重新上架)</div>
           </div>

@@ -67,14 +67,14 @@ func TestImportedVariantsThroughAutomaticRepricing(t *testing.T) {
 				return nil, fmt.Errorf("write used unknown offer ID: %s", r.URL)
 			}
 			var offer struct {
-				Price int `json:"selling_price"`
-				RRP   int `json:"rrp"`
+				Price int  `json:"selling_price"`
+				RRP   *int `json:"rrp"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&offer); err != nil {
 				return nil, err
 			}
-			if offer.RRP < offer.Price {
-				return nil, fmt.Errorf("invalid RRP: %+v", offer)
+			if offer.RRP != nil {
+				return nil, fmt.Errorf("repricer must omit RRP: %+v", offer)
 			}
 			writes[tsin]++
 			if rejectWrites {
@@ -92,7 +92,7 @@ func TestImportedVariantsThroughAutomaticRepricing(t *testing.T) {
 			for _, tsin := range []string{"111", "222"} {
 				if price, ok := prices[tsin]; ok {
 					id, _ := strconv.ParseInt(tsin, 10, 64)
-					offers = append(offers, api.OfferItem{OfferID: 9000 + id, TSINID: id, SellingPrice: float64(price), TSIN: api.TSINInfo{ProductlineID: 500, Title: "Strap " + tsin}})
+					offers = append(offers, api.OfferItem{OfferID: 9000 + id, TSINID: id, SellingPrice: float64(price), RRP: 500, TSIN: api.TSINInfo{ProductlineID: 500, Title: "Strap " + tsin}})
 				}
 			}
 			body = map[string]any{"offers": offers}
@@ -213,7 +213,7 @@ func TestImportedVariantsThroughAutomaticRepricing(t *testing.T) {
 		{"key": "111/500", "min_price": 90, "max_price": 150}, {"key": "222/500", "min_price": 250, "max_price": 400},
 	}})
 	listed = readOffers("/api/offers?sync=true")
-	if listed["111"].MinPrice != 90 || listed["222"].MinPrice != 250 {
+	if listed["111"].MinPrice != 90 || listed["222"].MinPrice != 250 || listed["111"].RRP != 500 || listed["222"].RRP != 500 {
 		t.Fatalf("sync lost limits: %+v", listed)
 	}
 	runCycle := func(want111, want222 int, fail bool) {
@@ -227,7 +227,7 @@ func TestImportedVariantsThroughAutomaticRepricing(t *testing.T) {
 		call("POST", "/api/reprice/stop", nil)
 		// NextRunTime is set only after executeRepriceCycle has returned.
 		listed := readOffers("/api/offers")
-		if listed["111"].SellingPrice != want111 || listed["222"].SellingPrice != want222 || listed["111"].MinPrice != 90 || listed["222"].MinPrice != 250 {
+		if listed["111"].SellingPrice != want111 || listed["222"].SellingPrice != want222 || listed["111"].MinPrice != 90 || listed["222"].MinPrice != 250 || listed["111"].RRP != 500 || listed["222"].RRP != 500 {
 			t.Fatalf("cycle prices/limits: %+v", listed)
 		}
 		if eng.GetStatus("default").IsRunning {

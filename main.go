@@ -38,7 +38,7 @@ var distEmbedFS embed.FS
 var staticHTML []byte
 
 var (
-	Version    = "0.1.19"
+	Version    = "0.1.20"
 	BuildMode  = "development" // "development" 或 "production" (构建时通过 ldflags 注入)
 	ProdCMSURL = "https://takealot.0122.vip"
 	DevCMSURL  = "https://takealot.0122.vip"

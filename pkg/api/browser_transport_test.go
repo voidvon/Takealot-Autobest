@@ -23,7 +23,7 @@ func TestBrowserTransportCoversExistingAndNewClientsAndCancellation(t *testing.T
 	})
 	second := pool.GetOrCreate("b", "test", "")
 	for _, client := range []*Client{first, second} {
-		if err := client.UpdateOfferPrice("1", 200, 240); err != nil {
+		if err := client.UpdateOfferPrice("1", 200); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -32,7 +32,7 @@ func TestBrowserTransportCoversExistingAndNewClientsAndCancellation(t *testing.T
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := first.WithContext(ctx).UpdateOfferPrice("1", 200, 240); !errors.Is(err, context.Canceled) {
+	if err := first.WithContext(ctx).UpdateOfferPrice("1", 200); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled write not stopped: %v", err)
 	}
 	if len(stores) != 2 {
@@ -54,7 +54,7 @@ func TestUncertainWritesAndVerificationAreNotRetried(t *testing.T) {
 				}
 				return &http.Response{StatusCode: 503, Body: io.NopCloser(strings.NewReader("unavailable"))}, nil
 			}
-			if err := client.UpdateOfferPrice("1", 200, 240); err == nil || calls != 1 {
+			if err := client.UpdateOfferPrice("1", 200); err == nil || calls != 1 {
 				t.Fatalf("write was silently replayed: calls=%d error=%v", calls, err)
 			}
 		})

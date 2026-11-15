@@ -143,11 +143,9 @@ export interface Store {
   is_active: boolean
   price_decrease_step: number
   price_increase_step: number
-  rrp_percentage: number
   interval_minutes: number
   bulk_stock: number
   max_fetch_offers: number
-  min_price_ratio?: number
   proxy_url?: string
   created_at?: string
   updated_at?: string
@@ -193,11 +191,9 @@ export interface SystemConfig {
   authorization: string
   price_decrease_step: number
   price_increase_step: number
-  rrp_percentage: number
   interval_minutes: number
   bulk_stock: number
   max_fetch_offers: number
-  min_price_ratio?: number
   targets: Record<string, TargetConfig>
 }
 

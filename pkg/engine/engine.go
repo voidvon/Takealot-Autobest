@@ -623,7 +623,6 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 	e.Log(fmt.Sprintf("🔍 店铺 [%s] 开始执行新一轮调价巡检，已勾选监控商品: %d 个...", store.Name, len(activeTargets)), "INFO", w.storeID, store.Name)
 	decreaseStep := store.PriceDecreaseStep
 	increaseStep := store.PriceIncreaseStep
-	rrpRatio := store.RRPPercentage / 100.0
 	// 卖家后台的 merchant SKU 与前台数字 SKU 不同，必须获取真实卖家 ID。
 	var sellerID int64
 	seller, sellerErr := apiClient.GetSellerInfo()
@@ -929,7 +928,6 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 			if ctx.Err() != nil {
 				return
 			}
-			rrp := int(float64(newPrice) * rrpRatio)
 			if e.membershipChecker != nil && !e.membershipChecker.IsValid() {
 				return
 			}
@@ -939,7 +937,7 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 				e.Log(fmt.Sprintf("⚠️ 提交前监控配置已变化或无法读取，跳过旧调价决策 (TSIN: %s)", tsinID), "WARN", w.storeID, store.Name)
 				continue
 			}
-			if err := apiClient.UpdateOfferPrice(offerID, newPrice, rrp); err == nil {
+			if err := apiClient.UpdateOfferPrice(offerID, newPrice); err == nil {
 				w.mu.Lock()
 				w.totalRepriced++
 				w.mu.Unlock()
@@ -956,10 +954,10 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 					}
 					_ = e.db.UpdateStoreSingleMPV(w.storeID, tsinID, refPrice, competing, priority, diff)
 				}
-				_ = e.db.UpdateCachedOfferPrice(w.storeID, tsinID, newPrice, rrp)
+				_ = e.db.UpdateCachedOfferPrice(w.storeID, tsinID, newPrice, 0)
 
-				e.Log(fmt.Sprintf("✅ [调价成功] %s... (TSIN:%s) | 原价: R%d -> 新价: R%d (RRP: R%d) | 原因: %s",
-					truncate(title, 22), tsinID, curPrice, newPrice, rrp, actionDesc), "SUCCESS", w.storeID, store.Name)
+				e.Log(fmt.Sprintf("✅ [调价成功] %s... (TSIN:%s) | 原价: R%d -> 新价: R%d | 原因: %s",
+					truncate(title, 22), tsinID, curPrice, newPrice, actionDesc), "SUCCESS", w.storeID, store.Name)
 			} else {
 				e.Log(fmt.Sprintf("❌ [调价失败] %s...: %v", truncate(title, 22), err), "ERROR", w.storeID, store.Name)
 			}

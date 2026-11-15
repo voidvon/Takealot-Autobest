@@ -172,11 +172,9 @@ export const api = {
     payload: {
       tsin_id?: string
       selling_price?: number
-      rrp?: number
       leadtime_days?: number
       status?: string
       store_id?: string
-      min_price?: number
       target_key?: string
     },
     storeId?: string
@@ -213,7 +211,6 @@ export const api = {
     barcode: string
     sku?: string
     selling_price: number
-    rrp?: number
     leadtime_days?: number
     leadtime_stock?: any[]
   }) =>
@@ -288,7 +285,6 @@ export const api = {
     offer_id?: string
     tsin?: string
     selling_price?: number
-    rrp?: number
     weight_kg?: number
     leadtime_stock?: number
   }) =>

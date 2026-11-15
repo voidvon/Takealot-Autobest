@@ -392,7 +392,7 @@ func TestQuickPriceUpdateDoesNotReportSuccessOrChangeCacheWhenVerificationRequir
 	})
 	eng := engine.NewEngine(nil, pool, database, nil)
 	srv := NewServer(nil, pool, eng, database, nil, nil, nil, nil, "test")
-	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8000/api/fulfillment/offer/quick-update", strings.NewReader(`{"offer_id":"123","selling_price":180,"rrp":220}`))
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8000/api/fulfillment/offer/quick-update", strings.NewReader(`{"offer_id":"123","selling_price":180}`))
 	req.Header.Set("X-Store-Id", store.ID)
 	recorder := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(recorder, req)
@@ -438,7 +438,7 @@ func TestQuickPriceUpdateResolvesTSINToSellerOfferBeforePatch(t *testing.T) {
 	})
 	eng := engine.NewEngine(nil, pool, database, nil)
 	srv := NewServer(nil, pool, eng, database, nil, nil, nil, nil, "test")
-	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8000/api/fulfillment/offer/quick-update", strings.NewReader(`{"tsin":"123","selling_price":180,"rrp":220}`))
+	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8000/api/fulfillment/offer/quick-update", strings.NewReader(`{"tsin":"123","selling_price":180}`))
 	request.Header.Set("X-Store-Id", store.ID)
 	recorder := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(recorder, request)
@@ -446,7 +446,7 @@ func TestQuickPriceUpdateResolvesTSINToSellerOfferBeforePatch(t *testing.T) {
 		t.Fatalf("quick update failed: %d %s calls=%d", recorder.Code, recorder.Body.String(), calls)
 	}
 	cached, err := database.LoadStoreCachedOffers(store.ID)
-	if err != nil || len(cached) != 1 || cached[0].SellingPrice != 180 {
+	if err != nil || len(cached) != 1 || cached[0].SellingPrice != 180 || cached[0].RRP != 240 {
 		t.Fatalf("TSIN cache not updated: %+v %v", cached, err)
 	}
 }

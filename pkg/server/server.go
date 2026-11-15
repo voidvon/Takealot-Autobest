@@ -514,9 +514,6 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			if newCfg.PriceIncreaseStep > 0 {
 				store.PriceIncreaseStep = newCfg.PriceIncreaseStep
 			}
-			if newCfg.RRPPercentage >= 100 {
-				store.RRPPercentage = newCfg.RRPPercentage
-			}
 			if newCfg.IntervalMinutes > 0 {
 				store.IntervalMinutes = newCfg.IntervalMinutes
 			}
@@ -525,9 +522,6 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			}
 			if newCfg.MaxFetchOffers > 0 {
 				store.MaxFetchOffers = newCfg.MaxFetchOffers
-			}
-			if newCfg.MinPriceRatio > 0 {
-				store.MinPriceRatio = newCfg.MinPriceRatio
 			}
 			_ = s.db.SaveStore(*store)
 			if client != nil {
@@ -1447,7 +1441,8 @@ func (s *Server) handleOfficialOfferUpdate(w http.ResponseWriter, r *http.Reques
 		payload["selling_price"] = *req.SellingPrice
 	}
 	if req.RRP != nil {
-		payload["rrp"] = *req.RRP
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "软件已停止修改参考划线价（RRP），请移除该字段后重试"})
+		return
 	}
 	if req.LeadtimeDays != nil {
 		payload["leadtime_days"] = *req.LeadtimeDays
@@ -1456,6 +1451,10 @@ func (s *Server) handleOfficialOfferUpdate(w http.ResponseWriter, r *http.Reques
 		payload["status"] = *req.Status
 	}
 	for k, v := range req.Extra {
+		if k == "rrp" || k == "selling_price" {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "请使用实际售价字段改价，不支持附加售价或参考划线价"})
+			return
+		}
 		payload[k] = v
 	}
 
@@ -1476,6 +1475,12 @@ func (s *Server) handleOfficialOfferUpdate(w http.ResponseWriter, r *http.Reques
 	if requestedStoreID != "" && (store == nil || store.ID != requestedStoreID) {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "请选择商品所属的有效店铺"})
 		return
+	}
+	if req.SellingPrice != nil {
+		if err := s.validateSellingPrice(store.ID, client, req.OfferID, req.TSINID, *req.SellingPrice); err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
 	}
 	if len(payload) > 0 {
 		offerID := req.OfferID
@@ -1508,11 +1513,7 @@ func (s *Server) handleOfficialOfferUpdate(w http.ResponseWriter, r *http.Reques
 	}
 
 	if req.SellingPrice != nil && s.db != nil {
-		rrpVal := 0
-		if req.RRP != nil {
-			rrpVal = *req.RRP
-		}
-		if err := s.db.UpdateCachedOfferPrice(targetStoreID, cacheKey, *req.SellingPrice, rrpVal); err != nil {
+		if err := s.db.UpdateCachedOfferPrice(targetStoreID, cacheKey, *req.SellingPrice, 0); err != nil {
 			jsonResponse(w, http.StatusInternalServerError, map[string]any{"success": false, "error": "平台参数已更新，但本地售价缓存保存失败: " + err.Error()})
 			return
 		}
@@ -1917,7 +1918,7 @@ func (s *Server) handleOfficialOfferCreate(w http.ResponseWriter, r *http.Reques
 		Barcode       string `json:"barcode"`
 		SKU           string `json:"sku"`
 		SellingPrice  int    `json:"selling_price"`
-		RRP           int    `json:"rrp"`
+		RRP           *int   `json:"rrp"`
 		LeadtimeDays  int    `json:"leadtime_days"`
 		LeadtimeStock []any  `json:"leadtime_stock"`
 	}
@@ -1935,8 +1936,9 @@ func (s *Server) handleOfficialOfferCreate(w http.ResponseWriter, r *http.Reques
 	if req.SKU != "" {
 		payload["sku"] = req.SKU
 	}
-	if req.RRP > 0 {
-		payload["rrp"] = req.RRP
+	if req.RRP != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "软件已停止填写参考划线价（RRP），请移除该字段后重试"})
+		return
 	}
 	if req.LeadtimeDays != 0 {
 		payload["leadtime_days"] = req.LeadtimeDays
@@ -2011,6 +2013,15 @@ func (s *Server) handleOfficialOfferBatch(w http.ResponseWriter, r *http.Request
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "店铺未连接"})
 		return
 	}
+	for _, offer := range req.Offers {
+		if fields, ok := offer.(map[string]any); ok {
+			if _, exists := fields["rrp"]; exists {
+				jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "软件已停止修改参考划线价（RRP），请从批量数据中移除该字段"})
+				return
+			}
+		}
+	}
+
 	res, err := client.CreateOfficialBatch(req.Offers)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"success": false, "error": err.Error()})
@@ -2510,7 +2521,7 @@ func (s *Server) handleOfferQuickUpdate(w http.ResponseWriter, r *http.Request) 
 		OfferID       string  `json:"offer_id"`
 		TSIN          string  `json:"tsin"`
 		SellingPrice  int     `json:"selling_price"`
-		RRP           int     `json:"rrp"`
+		RRP           *int    `json:"rrp"`
 		WeightKg      float64 `json:"weight_kg"`
 		LeadtimeStock int     `json:"leadtime_stock"`
 		MinPrice      *int    `json:"min_price,omitempty"`
@@ -2518,6 +2529,11 @@ func (s *Server) handleOfferQuickUpdate(w http.ResponseWriter, r *http.Request) 
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "Invalid body"})
+		return
+	}
+
+	if req.RRP != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "软件已停止修改参考划线价（RRP），请移除该字段后重试"})
 		return
 	}
 
@@ -2553,22 +2569,33 @@ func (s *Server) handleOfferQuickUpdate(w http.ResponseWriter, r *http.Request) 
 		targetOfferID = resolved
 	}
 
+	if req.SellingPrice < 0 {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "实际售价必须是大于 0 的整数"})
+		return
+	}
+	if req.SellingPrice > 0 {
+		if err := s.validateSellingPrice(storeID, client, targetOfferID, req.TSIN, req.SellingPrice); err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+	}
+
 	// 1. 如果有改价
 	if req.SellingPrice > 0 {
 		if client == nil {
 			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "店铺未连接"})
 			return
 		}
-		if err := client.UpdateOfferPrice(targetOfferID, req.SellingPrice, req.RRP); err != nil {
+		if err := client.UpdateOfferPrice(targetOfferID, req.SellingPrice); err != nil {
 			jsonResponse(w, http.StatusBadGateway, map[string]any{"success": false, "error": err.Error()})
 			return
 		}
 		if s.db != nil {
-			_ = s.db.UpdateCachedOfferPrice(storeID, cacheIdentifier, req.SellingPrice, req.RRP)
+			_ = s.db.UpdateCachedOfferPrice(storeID, cacheIdentifier, req.SellingPrice, 0)
 		}
 	}
 
-	// 2. 如果有更新底价 (商家手动改价时联动更新防亏底价)
+	// 2. Only an explicitly supplied floor may update protection; never derive it from selling price.
 	if req.MinPrice != nil && s.db != nil {
 		targetKey := strings.TrimSpace(req.TargetKey)
 		if targetKey == "" {

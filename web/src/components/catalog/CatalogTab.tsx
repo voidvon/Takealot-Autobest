@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { api } from '../../api/client'
-import type { OfficialOfferItem, Store } from '../../types'
+import type { OfficialOfferItem } from '../../types'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../ui/card'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
@@ -35,12 +35,7 @@ import {
   Package,
 } from 'lucide-react'
 
-export interface CatalogTabProps {
-  currentStore?: Store
-}
-
-export const CatalogTab: React.FC<CatalogTabProps> = ({ currentStore }) => {
-  const storeRatio = currentStore?.min_price_ratio && currentStore.min_price_ratio > 0 ? currentStore.min_price_ratio : 2.0
+export const CatalogTab: React.FC = () => {
 
   const [loading, setLoading] = useState(false)
   const [offers, setOffers] = useState<OfficialOfferItem[]>([])
@@ -65,11 +60,8 @@ export const CatalogTab: React.FC<CatalogTabProps> = ({ currentStore }) => {
     open: boolean
     item?: OfficialOfferItem
     sellingPrice?: number
-    rrp?: number
     leadtimeDays?: number
     status?: string
-    newMinPrice?: number
-    autoCalcMinPrice?: boolean
     saving?: boolean
   }>({ open: false })
 
@@ -88,7 +80,6 @@ export const CatalogTab: React.FC<CatalogTabProps> = ({ currentStore }) => {
     barcode: string
     sku: string
     sellingPrice: string
-    rrp: string
     leadtimeDays: string
     submitting?: boolean
   }>({
@@ -96,7 +87,6 @@ export const CatalogTab: React.FC<CatalogTabProps> = ({ currentStore }) => {
     barcode: '',
     sku: '',
     sellingPrice: '',
-    rrp: '',
     leadtimeDays: '7',
   })
 
@@ -131,26 +121,19 @@ export const CatalogTab: React.FC<CatalogTabProps> = ({ currentStore }) => {
 
   const handleEditSubmit = async () => {
     if (!editOffer.item) return
+    if (!Number.isSafeInteger(editOffer.sellingPrice) || !editOffer.sellingPrice || editOffer.sellingPrice <= 0) {
+      toast.warning('请输入大于 0 的整数售价')
+      return
+    }
     setEditOffer((prev) => ({ ...prev, saving: true }))
     try {
-      const targetKey = editOffer.item.product_label_number
-        ? `${editOffer.item.tsin_id}/${editOffer.item.product_label_number}`
-        : String(editOffer.item.tsin_id)
-
       await api.updateOfficialOffer(editOffer.item.offer_id, {
-        selling_price: editOffer.sellingPrice,
-        rrp: editOffer.rrp,
+        tsin_id: String(editOffer.item.tsin_id),
+        selling_price: editOffer.sellingPrice !== editOffer.item.selling_price ? editOffer.sellingPrice : undefined,
         leadtime_days: editOffer.leadtimeDays,
         status: editOffer.status,
-        min_price: editOffer.newMinPrice,
-        target_key: targetKey,
       })
-      toast.success(
-        '商品参数已保存',
-        editOffer.newMinPrice === undefined
-          ? `售价: R ${editOffer.sellingPrice || 0}，已保留原有防亏底价`
-          : `售价: R ${editOffer.sellingPrice || 0}，防亏底价已同步更新为: R ${editOffer.newMinPrice}`
-      )
+      toast.success('商品参数已保存', '已保留原有防亏底价和封顶价')
       setEditOffer({ open: false })
       loadOffers(page)
     } catch (err: any) {
@@ -217,7 +200,6 @@ export const CatalogTab: React.FC<CatalogTabProps> = ({ currentStore }) => {
         barcode: createModal.barcode.trim(),
         sku: createModal.sku.trim() || undefined,
         selling_price: price,
-        rrp: createModal.rrp ? parseInt(createModal.rrp) : undefined,
         leadtime_days: createModal.leadtimeDays ? parseInt(createModal.leadtimeDays) : 7,
       })
       toast.success('成功创建商品 Offer！', `条码: ${createModal.barcode}`)
@@ -226,8 +208,7 @@ export const CatalogTab: React.FC<CatalogTabProps> = ({ currentStore }) => {
         barcode: '',
         sku: '',
         sellingPrice: '',
-        rrp: '',
-        leadtimeDays: '7',
+            leadtimeDays: '7',
       })
       loadOffers(1)
     } catch (err: any) {
@@ -337,7 +318,6 @@ export const CatalogTab: React.FC<CatalogTabProps> = ({ currentStore }) => {
                 <TableHead className="min-w-[240px]">商品标题 / TSIN</TableHead>
                 <TableHead className="w-28 text-center">条形码 / SKU</TableHead>
                 <TableHead className="w-24 text-center">在售价格</TableHead>
-                <TableHead className="w-20 text-center">原价 (RRP)</TableHead>
                 <TableHead className="w-28 text-center">官方仓储量</TableHead>
                 <TableHead className="w-24 text-center">状态</TableHead>
                 <TableHead className="w-28 text-right pr-4">操作</TableHead>
@@ -346,13 +326,13 @@ export const CatalogTab: React.FC<CatalogTabProps> = ({ currentStore }) => {
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-16 text-center text-xs text-muted-foreground">
+                  <TableCell colSpan={7} className="py-16 text-center text-xs text-muted-foreground">
                     正在同步官方商品目录...
                   </TableCell>
                 </TableRow>
               ) : filteredItems.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-16 text-center text-xs text-muted-foreground">
+                  <TableCell colSpan={7} className="py-16 text-center text-xs text-muted-foreground">
                     未检索到符合条件的官方商品
                   </TableCell>
                 </TableRow>
@@ -435,11 +415,6 @@ export const CatalogTab: React.FC<CatalogTabProps> = ({ currentStore }) => {
                         </span>
                       </TableCell>
 
-                      {/* RRP */}
-                      <TableCell className="py-2.5 text-center font-mono text-xs text-muted-foreground">
-                        {item.rrp ? formatCurrency(item.rrp) : '-'}
-                      </TableCell>
-
                       {/* Warehouse Stock breakdown */}
                       <TableCell className="py-2.5 text-center font-mono">
                         <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-muted/60 text-xs">
@@ -478,11 +453,8 @@ export const CatalogTab: React.FC<CatalogTabProps> = ({ currentStore }) => {
                                 open: true,
                                 item,
                                 sellingPrice: item.selling_price,
-                                rrp: item.rrp,
                                 leadtimeDays: item.leadtime_days,
                                 status: item.status,
-                                newMinPrice: undefined,
-                                autoCalcMinPrice: false,
                               })
                             }
                             title="修改售价与库存"
@@ -557,87 +529,12 @@ export const CatalogTab: React.FC<CatalogTabProps> = ({ currentStore }) => {
             <div className="p-2.5 rounded-lg bg-muted text-muted-foreground">{editOffer.item?.title}</div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-foreground font-medium mb-1">售价 (Selling Price - R)</label>
-              <Input
-                type="number"
-                value={editOffer.sellingPrice ?? ''}
-                onChange={(e) => {
-                  const val = parseInt(e.target.value) || 0
-                  setEditOffer((prev) => {
-                    const autoCalc = prev.autoCalcMinPrice ?? false
-                    const calcMin = autoCalc ? Math.max(1, Math.round(val / storeRatio)) : prev.newMinPrice
-                    return {
-                      ...prev,
-                      sellingPrice: val,
-                      newMinPrice: calcMin,
-                    }
-                  })
-                }}
-                className="h-8 text-xs font-mono font-bold text-primary"
-              />
-            </div>
-            <div>
-              <label className="block text-foreground font-medium mb-1">原价 (RRP - R)</label>
-              <Input
-                type="number"
-                value={editOffer.rrp ?? ''}
-                onChange={(e) => setEditOffer((prev) => ({ ...prev, rrp: parseInt(e.target.value) || 0 }))}
-                className="h-8 text-xs font-mono"
-              />
-            </div>
-          </div>
-
-          {/* Min Price Protection */}
-          <div className="space-y-1.5 pt-2 border-t border-border">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-medium text-foreground flex items-center gap-1.5">
-                <span>防亏保护底价 Min Price (R)</span>
-                <span className="text-[11px] font-normal text-muted-foreground">
-                  (店铺折算倍数: {storeRatio}倍)
-                </span>
-              </label>
-              <label className="flex items-center gap-1.5 text-[11px] text-primary cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={editOffer.autoCalcMinPrice ?? false}
-                  onChange={(e) => {
-                    const checked = e.target.checked
-                    setEditOffer((prev) => ({
-                      ...prev,
-                      autoCalcMinPrice: checked,
-                      newMinPrice: checked && prev.sellingPrice ? Math.max(1, Math.round(prev.sellingPrice / storeRatio)) : prev.newMinPrice,
-                    }))
-                  }}
-                  className="rounded border-input text-primary focus:ring-primary h-3.5 w-3.5 cursor-pointer"
-                />
-                <span>随售价自动折算</span>
-              </label>
-            </div>
-
-            <Input
-              type="number"
-              value={editOffer.newMinPrice ?? ''}
-              onChange={(e) => {
-                const val = e.target.value === '' ? undefined : parseInt(e.target.value) || 0
-                setEditOffer((prev) => ({ ...prev, newMinPrice: val, autoCalcMinPrice: false }))
-              }}
-              placeholder="留空保留已保存底价"
-              className="h-8 font-mono text-xs"
-            />
-
-            <div className="text-[11px]">
-              {(editOffer.autoCalcMinPrice ?? false) ? (
-                <span className="text-blue-600 dark:text-blue-400">
-                  💡 联动计算已生效：售价 R {editOffer.sellingPrice || 0} ÷ {storeRatio}倍 ≈ <strong>R {editOffer.newMinPrice || 0}</strong>
-                </span>
-              ) : (
-                <span className="text-muted-foreground">
-                  保留已保存底价；输入新底价或勾选按 {storeRatio} 倍折算后，保存时才会更新
-                </span>
-              )}
-            </div>
+          <div>
+            <label className="block text-foreground font-medium mb-1">实际售价 (R)</label>
+            <Input type="number" min="1" step="1" value={editOffer.sellingPrice ?? ''}
+              onChange={(e) => setEditOffer((prev) => ({ ...prev, sellingPrice: Number(e.target.value) }))}
+              className="h-8 text-xs font-mono font-bold text-primary" />
+            <p className="mt-2 text-muted-foreground">底价与封顶价在自动竞价列表中配置，修改售价会保留已保存的价格保护范围。</p>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -736,7 +633,7 @@ export const CatalogTab: React.FC<CatalogTabProps> = ({ currentStore }) => {
                   </div>
                 </div>
                 <div className="p-2.5 rounded-lg bg-card border border-border text-center">
-                  <div className="text-[10px] text-muted-foreground">建议零售价 (RRP)</div>
+                  <div className="text-[10px] text-muted-foreground">参考划线价（平台）</div>
                   <div className="font-bold text-sm text-muted-foreground font-mono mt-0.5">
                     R {inspectModal.result.rrp || '-'}
                   </div>
@@ -803,16 +700,6 @@ export const CatalogTab: React.FC<CatalogTabProps> = ({ currentStore }) => {
                 value={createModal.sellingPrice}
                 onChange={(e) => setCreateModal((prev) => ({ ...prev, sellingPrice: e.target.value }))}
                 className="h-8 text-xs font-mono font-bold"
-              />
-            </div>
-            <div>
-              <label className="block text-foreground font-medium mb-1">建议零售价 RRP (R)</label>
-              <Input
-                type="number"
-                placeholder="例如: 699"
-                value={createModal.rrp}
-                onChange={(e) => setCreateModal((prev) => ({ ...prev, rrp: e.target.value }))}
-                className="h-8 text-xs font-mono"
               />
             </div>
           </div>
