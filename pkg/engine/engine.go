@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -197,6 +196,11 @@ func (e *Engine) GetRecentLogs() []LogEntry {
 }
 
 func (e *Engine) StartReprice(storeID string) (bool, string) {
+	if e.db != nil {
+		if store, err := e.db.GetStore(storeID); err != nil || store == nil {
+			return false, "请先添加并选择自己的店铺"
+		}
+	}
 	if e.membershipChecker != nil && !e.membershipChecker.IsValid() {
 		e.Log("❌ 启动失败: 未登录、VIP 已失效或无法在线验证，请检查会员账号", "ERROR", storeID, "")
 		return false, "未登录、VIP 已失效或无法在线验证，请检查会员账号"
@@ -592,8 +596,21 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 	}
 
 	activeTargets := make(map[string]config.Target)
+	canonicalTSINs := make(map[string]bool)
+	for key := range targetsMap {
+		if parts := strings.SplitN(key, "/", 2); len(parts) == 2 {
+			canonicalTSINs[parts[0]] = true
+		}
+	}
 	for k, v := range targetsMap {
+		if canonicalTSINs[k] {
+			continue // A stale TSIN-only alias must not bypass canonical limits/selection.
+		}
 		if v.Selected {
+			if v.MinPrice <= 0 || v.MaxPrice < 0 || (v.MaxPrice > 0 && v.MaxPrice < v.MinPrice) {
+				e.Log(fmt.Sprintf("🛡️ 商品 %s 未设置有效底价或价格范围冲突，跳过自动调价", k), "WARN", store.ID, store.Name)
+				continue
+			}
 			activeTargets[k] = v
 		}
 	}
@@ -649,17 +666,7 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 		e.Log(fmt.Sprintf("⚠️ 店铺 [%s] 商品列表未完整获取（已读取 %d 条）: %v", store.Name, len(rawOffers), err), "WARN", store.ID, store.Name)
 	}
 	if len(rawOffers) > 0 {
-		oldCached, _ := e.db.LoadStoreCachedOffers(w.storeID)
-		oldCachedMap := make(map[string]db.CachedOffer, len(oldCached))
-		for _, c := range oldCached {
-			oldCachedMap[c.TSINID] = c
-		}
-
-		storeRatio := store.MinPriceRatio
-		if storeRatio <= 0 {
-			storeRatio = 2.0
-		}
-
+		// 平台售价可能延迟或由其他工具修改，不能据此推断商家意图并覆盖防亏底价。
 		cachedItems := make([]db.CachedOffer, 0, len(rawOffers))
 		for _, o := range rawOffers {
 			tsinStr := strconv.FormatInt(o.TSINID, 10)
@@ -671,31 +678,6 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 			}
 			curPlatformPrice := int(o.SellingPrice)
 			key := fmt.Sprintf("%s/%s", tsinStr, plidStr)
-
-			// 检查平台后台价格是否发生了外部变动 (例如商家在 Takealot 官方后台修改了价格)
-			if oldItem, exists := oldCachedMap[tsinStr]; exists && oldItem.SellingPrice > 0 && curPlatformPrice > 0 {
-				if curPlatformPrice != oldItem.SellingPrice {
-					// 校验：是否是调价引擎自身刚刚调整的目标价格
-					lastEnginePrice, hasEnginePrice := e.db.GetLatestRepricePrice(w.storeID, tsinStr)
-					if !hasEnginePrice || lastEnginePrice != curPlatformPrice {
-						// 确定为商家外部后台自主改价：自动按折算倍数刷新防亏底价
-						newMinPrice := int(math.Round(float64(curPlatformPrice) / storeRatio))
-						if newMinPrice <= 0 {
-							newMinPrice = 1
-						}
-						_ = e.db.UpdateTargetMinPrice(w.storeID, key, newMinPrice)
-						if tgt, ok := activeTargets[key]; ok {
-							tgt.MinPrice = newMinPrice
-							activeTargets[key] = tgt
-						} else if tgt, ok := activeTargets[tsinStr]; ok {
-							tgt.MinPrice = newMinPrice
-							activeTargets[tsinStr] = tgt
-						}
-						e.Log(fmt.Sprintf("🛡️ 检测到平台后台零售价外部变动 (TSIN: %s, 原价: R%d -> 现价: R%d)，已按 %.1f 倍自动更新防亏底价为 R%d",
-							tsinStr, oldItem.SellingPrice, curPlatformPrice, storeRatio, newMinPrice), "INFO", w.storeID, store.Name)
-					}
-				}
-			}
 
 			cachedItems = append(cachedItems, db.CachedOffer{
 				StoreID:         w.storeID,
@@ -725,7 +707,7 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 	publicErrors := make(map[string]error)
 	mpvRateLimited := false
 
-	for key, target := range activeTargets {
+	for key := range activeTargets {
 		select {
 		case <-ctx.Done():
 			return
@@ -752,7 +734,6 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 		if len(parts) > 1 {
 			plid = parts[1]
 		}
-		minPrice := target.MinPrice
 
 		var curPrice int
 		var offerID string
@@ -880,17 +861,35 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 				return
 			}
 			if bbErr != nil {
-				e.Log(fmt.Sprintf("⚠️ [%s] 获取具体规格竞品报价失败，本轮暂停调价 (TSIN: %s, PLID: %s): %v", truncate(title, 20), tsinID, plid, bbErr), "WARN", w.storeID, store.Name)
+				e.Log(fmt.Sprintf("⚠️ [%s] 获取具体规格竞品报价失败 (TSIN: %s, PLID: %s): %v", truncate(title, 20), tsinID, plid, bbErr), "WARN", w.storeID, store.Name)
 				e.reportPriceFetchFailure(store.Name, tsinID, plid, bbErr)
 			}
 		} else {
-			e.Log(fmt.Sprintf("⚠️ [%s] 缺少 PLID，无法获取竞品报价，本轮暂停调价 (TSIN: %s)", truncate(title, 20), tsinID), "WARN", w.storeID, store.Name)
+			e.Log(fmt.Sprintf("⚠️ [%s] 缺少 PLID，无法获取竞品报价 (TSIN: %s)", truncate(title, 20), tsinID), "WARN", w.storeID, store.Name)
 		}
-		if !quoteConfirmed {
+		// 抓价可能耗时较长，计算前读取最新底价及勾选状态，避免整轮沿用旧配置。
+		target, err := e.db.LoadStoreTarget(w.storeID, key)
+		if err != nil {
+			e.Log(fmt.Sprintf("⚠️ 读取最新监控配置失败，跳过调价 (TSIN: %s): %v", tsinID, err), "WARN", w.storeID, store.Name)
+			continue
+		}
+		if !target.Selected || target.MinPrice <= 0 || target.MaxPrice < 0 || (target.MaxPrice > 0 && target.MaxPrice < target.MinPrice) {
+			continue
+		}
+		minPrice := target.MinPrice
+		floorRecovery := curPrice > 0 && curPrice < minPrice && (target.MaxPrice <= 0 || minPrice <= target.MaxPrice)
+		if !quoteConfirmed && !floorRecovery {
 			// bestPrice 也包含自身报价且可能延迟更新，不能用它追降自己的旧价，
 			// 也不把它写成已经确认的竞品价覆盖历史数据。
 			time.Sleep(300 * time.Millisecond)
 			continue
+		}
+		if !quoteConfirmed {
+			// 已确认本店具体 TSIN 的售价，恢复商家明确设置的底价不依赖竞品报价。
+			// 未确认的市场数据不能驱动其他调价或写入竞品缓存。
+			competitorPrice, bestPrice, competing = 0, 0, 0
+			soloConfirmed = false
+			e.Log(fmt.Sprintf("🛡️ 当前售价 R%d 低于已保存底价 R%d，仅执行底价回调 (TSIN: %s)", curPrice, minPrice, tsinID), "WARN", w.storeID, store.Name)
 		}
 
 		// 展示用的竞品参考价：优先使用真实竞品价，其次退回市场最低价。
@@ -916,7 +915,7 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 		if refPrice > 0 {
 			_ = e.db.UpdateStoreSingleMPV(w.storeID, tsinID, refPrice, competing, priority, diff)
 		}
-		if bestPrice <= 0 && competitorPrice <= 0 && !soloConfirmed {
+		if bestPrice <= 0 && competitorPrice <= 0 && !soloConfirmed && !floorRecovery {
 			e.Log(fmt.Sprintf("[%s] 未获取到竞品价格 (TSIN: %s)", truncate(title, 20), tsinID), "DEBUG", w.storeID, store.Name)
 			time.Sleep(300 * time.Millisecond)
 			continue
@@ -934,6 +933,12 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 			if e.membershipChecker != nil && !e.membershipChecker.IsValid() {
 				return
 			}
+			// 会员校验也可能等待网络，提交前再次确认，配置变化后丢弃本次旧决策。
+			latest, err := e.db.LoadStoreTarget(w.storeID, key)
+			if err != nil || !latest.Selected || latest.MinPrice != minPrice || latest.MaxPrice != target.MaxPrice || newPrice < latest.MinPrice {
+				e.Log(fmt.Sprintf("⚠️ 提交前监控配置已变化或无法读取，跳过旧调价决策 (TSIN: %s)", tsinID), "WARN", w.storeID, store.Name)
+				continue
+			}
 			if err := apiClient.UpdateOfferPrice(offerID, newPrice, rrp); err == nil {
 				w.mu.Lock()
 				w.totalRepriced++
@@ -944,7 +949,13 @@ func (e *Engine) executeRepriceCycle(ctx context.Context, w *StoreWorker) {
 					actionType = "调价"
 				}
 				_ = e.db.RecordStoreReprice(w.storeID, key, tsinID, sku, title, imageURL, store.Name, actionType, curPrice, newPrice, refPrice, actionDesc)
-				_ = e.db.UpdateStoreSingleMPV(w.storeID, tsinID, refPrice, competing, "winning", 0)
+				if quoteConfirmed && refPrice > 0 {
+					priority, diff = "winning", 0
+					if newPrice > refPrice {
+						priority, diff = "losing", newPrice-refPrice
+					}
+					_ = e.db.UpdateStoreSingleMPV(w.storeID, tsinID, refPrice, competing, priority, diff)
+				}
 				_ = e.db.UpdateCachedOfferPrice(w.storeID, tsinID, newPrice, rrp)
 
 				e.Log(fmt.Sprintf("✅ [调价成功] %s... (TSIN:%s) | 原价: R%d -> 新价: R%d (RRP: R%d) | 原因: %s",
@@ -1006,144 +1017,6 @@ func (e *Engine) resolveVariantBuybox(apiClient *api.Client, plid, tsinID string
 		return nil, false
 	}
 	return bb, true
-}
-
-type FollowItem struct {
-	URL      string `json:"url"`
-	Stock    int    `json:"stock"`
-	MinPrice int    `json:"min_price"`
-}
-
-func (e *Engine) RunFollowBatch(storeID string, items []FollowItem) (bool, string) {
-	if e.membershipChecker != nil && !e.membershipChecker.IsValid() {
-		return false, "请登录并开通有效 VIP"
-	}
-	w := e.getOrCreateWorker(storeID)
-	w.mu.Lock()
-	if w.followRunning {
-		w.mu.Unlock()
-		return false, "跟卖任务正在运行中"
-	}
-	w.followRunning = true
-	w.mu.Unlock()
-
-	go e.executeFollowBatch(w, items)
-	return true, "跟卖任务已在后台启动"
-}
-
-func (e *Engine) executeFollowBatch(w *StoreWorker, items []FollowItem) {
-	defer func() {
-		w.mu.Lock()
-		w.followRunning = false
-		w.mu.Unlock()
-	}()
-
-	store, err := e.db.GetStore(w.storeID)
-	if err != nil || store == nil {
-		e.Log("❌ 未找到店铺配置", "ERROR", w.storeID, w.name())
-		return
-	}
-	apiClient := e.clientPool.GetOrCreate(store.ID, store.Authorization, store.ProxyURL)
-
-	e.Log(fmt.Sprintf("🛒 店铺 [%s] 开始执行批量跟卖任务，共 %d 条目标...", store.Name, len(items)), "INFO", w.storeID, store.Name)
-	successCount := 0
-	newTargets := make(map[string]config.Target)
-
-	for idx, item := range items {
-		if e.membershipChecker != nil && !e.membershipChecker.IsValid() {
-			e.Log("会员验证失效，已停止跟卖任务", "WARN", w.storeID, store.Name)
-			return
-		}
-		urlOrPLID := strings.TrimSpace(item.URL)
-		minPrice := item.MinPrice
-
-		cleanPLID := urlOrPLID
-		if strings.Contains(strings.ToUpper(urlOrPLID), "PLID") {
-			pos := strings.Index(strings.ToUpper(urlOrPLID), "PLID")
-			sub := urlOrPLID[pos+4:]
-			for _, delim := range []string{"?", "&", "/", "#"} {
-				if idx := strings.Index(sub, delim); idx != -1 {
-					sub = sub[:idx]
-				}
-			}
-			cleanPLID = sub
-		}
-
-		if cleanPLID == "" {
-			continue
-		}
-
-		e.Log(fmt.Sprintf("[%d/%d] 正在查询 PLID: %s 的商品变体...", idx+1, len(items), cleanPLID), "INFO", w.storeID, store.Name)
-		results, err := apiClient.GetMPVByPLID(cleanPLID)
-		if err != nil || len(results) == 0 {
-			e.Log(fmt.Sprintf("⚠️ 未找到 PLID %s 对应商品或无返回", cleanPLID), "WARN", w.storeID, store.Name)
-			time.Sleep(1500 * time.Millisecond)
-			continue
-		}
-
-		followedInPLID := 0
-		for _, mpv := range results {
-			if e.membershipChecker != nil && !e.membershipChecker.IsValid() {
-				return
-			}
-			hasOfferStr := fmt.Sprintf("%v", mpv.HasOffer)
-			if strings.ToLower(hasOfferStr) == "false" {
-				gtin := mpv.GTIN
-				tsinID := api.AnyToString(mpv.TSINID)
-				productlineID := api.AnyToString(mpv.ProductlineID)
-				bestPrice := int(mpv.BestPrice)
-
-				offerPrice := bestPrice - 1
-				if offerPrice < minPrice && minPrice > 0 {
-					offerPrice = minPrice
-				}
-				if offerPrice < 1 {
-					offerPrice = 100
-				}
-				rrp := int(float64(offerPrice) * 1.2)
-
-				if e.membershipChecker != nil && !e.membershipChecker.IsValid() {
-					return
-				}
-				if err := apiClient.CreateOffer(gtin, offerPrice, rrp, -1); err == nil {
-					followedInPLID++
-					successCount++
-					w.mu.Lock()
-					w.totalFollowed++
-					w.mu.Unlock()
-
-					key := fmt.Sprintf("%s/%s", tsinID, productlineID)
-					newTargets[key] = config.Target{
-						Selected: true,
-						MinPrice: minPrice,
-						MaxPrice: 0,
-					}
-					if e.db != nil {
-						_ = e.db.RecordStoreFollow(w.storeID, item.URL, tsinID, productlineID, gtin, item.Stock, minPrice, "SUCCESS", fmt.Sprintf("售价: R%d, RRP: R%d", offerPrice, rrp))
-					}
-					e.Log(fmt.Sprintf("🎉 成功跟卖 GTIN:%s (TSIN:%s) | 售价: R%d, RRP: R%d", gtin, tsinID, offerPrice, rrp), "SUCCESS", w.storeID, store.Name)
-				} else {
-					if e.db != nil {
-						_ = e.db.RecordStoreFollow(w.storeID, item.URL, tsinID, productlineID, gtin, item.Stock, minPrice, "FAILED", err.Error())
-					}
-					e.Log(fmt.Sprintf("❌ 跟卖失败 GTIN:%s: %v", gtin, err), "ERROR", w.storeID, store.Name)
-				}
-				time.Sleep(1500 * time.Millisecond)
-			}
-		}
-
-		if followedInPLID == 0 {
-			e.Log(fmt.Sprintf("ℹ️ PLID %s 全部变体均已有 Offer 或不可跟卖", cleanPLID), "DEBUG", w.storeID, store.Name)
-		}
-		time.Sleep(2 * time.Second)
-	}
-
-	if len(newTargets) > 0 && e.db != nil {
-		_ = e.db.SaveStoreTargets(w.storeID, newTargets)
-		e.Log(fmt.Sprintf("💾 已将新跟卖的 %d 个商品自动加入店铺 [%s] 监控列表并存入数据库", len(newTargets), store.Name), "SUCCESS", w.storeID, store.Name)
-	}
-
-	e.Log(fmt.Sprintf("🏁 店铺 [%s] 批量跟卖完成！成功上架 Offer: %d 个", store.Name, successCount), "SUCCESS", w.storeID, store.Name)
 }
 
 func truncate(str string, maxLen int) string {

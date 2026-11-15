@@ -12,7 +12,10 @@ import type {
   StockCounts,
   StockHealthStats,
   FollowItem,
+  FollowVariant,
+  FollowPreviewError,
   TargetConfig,
+  VariantPriceConfig,
   AccountStatus,
   UpdateInfo,
   UpdateProgress,
@@ -102,13 +105,19 @@ export const api = {
 
   // Repricing Engine & Offers
   getOffers: (sync = false) =>
-    request<{ success: boolean; total: number; offers: OfferViewModel[]; source?: string; auto_updated_min_count?: number }>(
+    request<{ success: boolean; total: number; offers: OfferViewModel[]; source?: string }>(
       sync ? '/api/offers?sync=true' : '/api/offers'
     ),
   saveTargets: (targets: Record<string, TargetConfig>) =>
     request<{ success: boolean; message: string }>('/api/targets', {
       method: 'POST',
       body: JSON.stringify(targets),
+    }),
+  saveVariantPrices: (items: VariantPriceConfig[], storeId: string) =>
+    request<{ success: boolean; message: string }>('/api/targets/prices', {
+      method: 'POST',
+      headers: { 'X-Store-Id': storeId },
+      body: JSON.stringify({ items }),
     }),
   startReprice: () => request<{ success: boolean; message: string }>('/api/reprice/start', { method: 'POST' }),
   pauseReprice: () => request<{ success: boolean; message: string }>('/api/reprice/pause', { method: 'POST' }),
@@ -138,6 +147,11 @@ export const api = {
       body: JSON.stringify({ file_data: fileData, file_size: file.size }),
     })
   },
+  previewFollowBatch: (items: FollowItem[]) =>
+    request<{ success: boolean; variants: FollowVariant[]; errors: FollowPreviewError[] }>('/api/follow/preview', {
+      method: 'POST',
+      body: JSON.stringify({ items }),
+    }),
   startFollowBatch: (items: FollowItem[]) =>
     request<{ success: boolean; message: string }>('/api/follow/start', {
       method: 'POST',

@@ -119,3 +119,39 @@ func TestDecidePrice_DefaultStepsWhenNonPositive(t *testing.T) {
 		t.Fatalf("NewPrice = %d, want 94 with defaulted steps", got.NewPrice)
 	}
 }
+
+func TestDecidePrice_RecoversPriceBelowFloor(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		competitor int
+		best       int
+		max        int
+		solo       bool
+	}{
+		{"reported price 120 competitor 119 floor 210", 119, 119, 0, false},
+		{"competitor higher but still below floor", 150, 120, 0, false},
+		{"tie below floor", 120, 120, 0, false},
+		{"unknown competitor", 0, 0, 0, false},
+		{"solo raises directly to floor", 0, 120, 300, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := decidePrice(120, tc.competitor, tc.best, 210, tc.max, 1, 1, tc.solo)
+			if got.NewPrice != 210 || got.Action != "底价保护" {
+				t.Fatalf("decision = %+v, want floor recovery to 210", got)
+			}
+		})
+	}
+}
+
+func TestDecidePrice_InvalidLimitsOrCurrentPriceHold(t *testing.T) {
+	for _, tc := range []struct{ current, min, max int }{
+		{120, 210, 200},
+		{300, 210, 200},
+		{0, 210, 0},
+		{-1, 210, 0},
+	} {
+		if got := decidePrice(tc.current, 119, 119, tc.min, tc.max, 1, 1, false); got.NewPrice != -1 {
+			t.Errorf("limits %+v: decision = %+v, want hold", tc, got)
+		}
+	}
+}

@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"math"
 	"mime"
 	"net/http"
-	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -68,6 +66,9 @@ func (s *Server) isAllStores(r *http.Request) bool {
 }
 
 func (s *Server) getStoreContext(r *http.Request) (*db.Store, *api.Client, error) {
+	if s.db == nil || s.clientPool == nil {
+		return nil, nil, fmt.Errorf("店铺数据库未就绪")
+	}
 	storeID := strings.TrimSpace(r.Header.Get("X-Store-Id"))
 	if storeID == "" {
 		storeID = strings.TrimSpace(r.URL.Query().Get("store_id"))
@@ -78,6 +79,7 @@ func (s *Server) getStoreContext(r *http.Request) (*db.Store, *api.Client, error
 			client := s.clientPool.GetOrCreate(st.ID, st.Authorization, st.ProxyURL)
 			return st, client, nil
 		}
+		return nil, nil, fmt.Errorf("所选店铺不存在，请重新选择或添加店铺")
 	}
 	// Fallback to first store in DB
 	if s.db != nil {
@@ -87,13 +89,8 @@ func (s *Server) getStoreContext(r *http.Request) (*db.Store, *api.Client, error
 			client := s.clientPool.GetOrCreate(st.ID, st.Authorization, st.ProxyURL)
 			return st, client, nil
 		}
-		defStore, err := s.db.EnsureDefaultStore("", 1, 1, 5, 1, 1000, 120.0)
-		if err == nil && defStore != nil {
-			client := s.clientPool.GetOrCreate(defStore.ID, defStore.Authorization, defStore.ProxyURL)
-			return defStore, client, nil
-		}
 	}
-	return nil, nil, fmt.Errorf("未找到有效店铺")
+	return nil, nil, fmt.Errorf("尚未添加店铺，请先添加自己的店铺")
 }
 
 func (s *Server) Handler() http.Handler {
@@ -171,6 +168,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/test_auth", s.handleTestAuth)
 	s.mux.HandleFunc("/api/offers", s.handleOffers)
 	s.mux.HandleFunc("/api/targets", s.handleTargets)
+	s.mux.HandleFunc("/api/targets/prices", s.handleTargetPrices)
 	s.mux.HandleFunc("/api/reprice/start", s.handleRepriceStart)
 	s.mux.HandleFunc("/api/reprice/pause", s.handleRepricePause)
 	s.mux.HandleFunc("/api/reprice/stop", s.handleRepriceStop)
@@ -183,6 +181,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/stores/sync", s.handleStoreSync)
 	s.mux.HandleFunc("/api/follow/upload", s.handleFollowUpload)
 	s.mux.HandleFunc("/api/follow/template", s.handleFollowTemplate)
+	s.mux.HandleFunc("/api/follow/preview", s.handleFollowPreview)
 	s.mux.HandleFunc("/api/follow/start", s.handleFollowStart)
 	s.mux.HandleFunc("/api/follow/history", s.handleFollowHistory)
 	s.mux.HandleFunc("/api/logs/stream", s.handleLogsStream)
@@ -474,7 +473,11 @@ func (s *Server) handleAccountChangePassword(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
-	store, client, _ := s.getStoreContext(r)
+	store, client, err := s.getStoreContext(r)
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
 	if r.Method == http.MethodGet {
 		cfg := s.cfgMgr.Get()
 		if store != nil {
@@ -621,9 +624,9 @@ func (s *Server) handleOffers(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			parsed := make([]OfferViewModel, 0, len(cached))
 			for _, c := range cached {
-				targetInfo := allTargets[c.StoreID+":"+c.Key]
-				if targetInfo.StoreID == "" {
-					targetInfo = allTargets[c.Key]
+				targetInfo, exists := allTargets[c.StoreID+":"+c.Key]
+				if !exists {
+					targetInfo = allTargets[c.StoreID+":"+c.TSINID]
 				}
 				sName := storeNameMap[c.StoreID]
 				if sName == "" {
@@ -679,7 +682,10 @@ func (s *Server) handleOffers(w http.ResponseWriter, r *http.Request) {
 		if err == nil && len(cached) > 0 {
 			parsed := make([]OfferViewModel, 0, len(cached))
 			for _, c := range cached {
-				targetInfo := targets[c.Key]
+				targetInfo, exists := targets[c.Key]
+				if !exists {
+					targetInfo = targets[c.TSINID]
+				}
 				parsed = append(parsed, OfferViewModel{
 					Key:             c.Key,
 					TSINID:          c.TSINID,
@@ -724,48 +730,13 @@ func (s *Server) handleOffers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	oldCachedMap := make(map[string]db.CachedOffer)
-	if s.db != nil {
-		oldCached, _ := s.db.LoadStoreCachedOffers(store.ID)
-		for _, c := range oldCached {
-			oldCachedMap[c.TSINID] = c
-		}
-	}
-
-	storeRatio := store.MinPriceRatio
-	if storeRatio <= 0 {
-		storeRatio = 2.0
-	}
-
-	autoUpdatedMinCount := 0
-
+	// 同步只更新平台商品数据，防亏底价必须由商家明确修改。
 	cachedItems := make([]db.CachedOffer, 0, len(rawOffers))
 	for _, item := range rawOffers {
 		tsinStr := strconv.FormatInt(item.TSINID, 10)
 		plidStr := api.AnyToString(item.TSIN.ProductlineID)
 		key := fmt.Sprintf("%s/%s", tsinStr, plidStr)
 		curPlatformPrice := int(item.SellingPrice)
-
-		// 检查平台后台价格是否发生了外部变动 (例如商家在 Takealot 官方后台修改了价格)
-		if oldItem, exists := oldCachedMap[tsinStr]; exists && oldItem.SellingPrice > 0 && curPlatformPrice > 0 {
-			if curPlatformPrice != oldItem.SellingPrice {
-				// 校验：是否是调价引擎自身刚刚调整的目标价格
-				lastEnginePrice, hasEnginePrice := s.db.GetLatestRepricePrice(store.ID, tsinStr)
-				if !hasEnginePrice || lastEnginePrice != curPlatformPrice {
-					// 确定为商家外部后台自主改价：自动按折算倍数刷新防亏底价
-					newMinPrice := int(math.Round(float64(curPlatformPrice) / storeRatio))
-					if newMinPrice <= 0 {
-						newMinPrice = 1
-					}
-					_ = s.db.UpdateTargetMinPrice(store.ID, key, newMinPrice)
-					autoUpdatedMinCount++
-					if s.eng != nil {
-						s.eng.Log(fmt.Sprintf("🛡️ 同步检测到平台后台零售价外部变动 (TSIN: %s, 原价: R%d -> 现价: R%d)，已按 %.1f 倍自动更新防亏底价为 R%d",
-							tsinStr, oldItem.SellingPrice, curPlatformPrice, storeRatio, newMinPrice), "INFO", store.ID, store.Name)
-					}
-				}
-			}
-		}
 
 		cachedItems = append(cachedItems, db.CachedOffer{
 			Key:             key,
@@ -788,7 +759,7 @@ func (s *Server) handleOffers(w http.ResponseWriter, r *http.Request) {
 	// 持久化到 SQLite（内部自动保留已有的竞品价格）
 	if s.db != nil {
 		_ = s.db.SaveStoreCachedOffers(store.ID, cachedItems)
-		// 重新加载 targets 以确保包含刚才自动更新的底价
+		// 同步期间可能有用户保存配置，重新读取以返回最新底价。
 		targets, _ = s.db.LoadStoreTargets(store.ID)
 	}
 
@@ -798,8 +769,8 @@ func (s *Server) handleOffers(w http.ResponseWriter, r *http.Request) {
 		if reloaded, err := s.db.LoadStoreCachedOffers(store.ID); err == nil && len(reloaded) > 0 {
 			parsed = make([]OfferViewModel, 0, len(reloaded))
 			for _, c := range reloaded {
-				targetInfo := targets[c.Key]
-				if targetInfo.MinPrice == 0 && targets[c.TSINID].MinPrice > 0 {
+				targetInfo, exists := targets[c.Key]
+				if !exists {
 					targetInfo = targets[c.TSINID]
 				}
 				parsed = append(parsed, OfferViewModel{
@@ -828,12 +799,89 @@ func (s *Server) handleOffers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]any{
-		"success":                true,
-		"total":                  len(parsed),
-		"offers":                 parsed,
-		"source":                 "live_sync",
-		"auto_updated_min_count": autoUpdatedMinCount,
+		"success": true,
+		"total":   len(parsed),
+		"offers":  parsed,
+		"source":  "live_sync",
 	})
+}
+
+func (s *Server) handleTargetPrices(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	store, err := s.followStoreContext(r)
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	var req struct {
+		Items []struct {
+			Key      string `json:"key"`
+			MinPrice int    `json:"min_price"`
+			MaxPrice int    `json:"max_price"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Items) == 0 {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "请提交有效的规格底价配置"})
+		return
+	}
+	cached, err := s.db.LoadStoreCachedOffers(store.ID)
+	if err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": "读取店铺规格失败"})
+		return
+	}
+	known := make(map[string]bool, len(cached))
+	for _, offer := range cached {
+		known[offer.Key] = true
+	}
+	targets := make(map[string]config.Target, len(req.Items))
+	for _, item := range req.Items {
+		if !known[item.Key] {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "规格不属于当前店铺，请重新同步商品"})
+			return
+		}
+		if _, exists := targets[item.Key]; exists {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "规格配置重复"})
+			return
+		}
+		if item.MinPrice <= 0 || item.MaxPrice < 0 || (item.MaxPrice > 0 && item.MaxPrice < item.MinPrice) {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "底价须大于 0，封顶价不能低于底价"})
+			return
+		}
+		targets[item.Key] = config.Target{MinPrice: item.MinPrice, MaxPrice: item.MaxPrice}
+	}
+	if err := s.db.SaveStoreTargetPrices(store.ID, targets); err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": "规格底价保存失败"})
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]any{"success": true, "message": "规格底价和封顶价已保存"})
+}
+
+func decodeTargetConfiguration(r *http.Request) (map[string]config.Target, error) {
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil || raw == nil {
+		return nil, fmt.Errorf("监控配置格式无效")
+	}
+	payload, err := json.Marshal(raw)
+	if err != nil {
+		return nil, err
+	}
+	if wrapped, ok := raw["targets"]; ok {
+		payload = wrapped
+	}
+	var targets map[string]config.Target
+	if err := json.Unmarshal(payload, &targets); err != nil || targets == nil {
+		return nil, fmt.Errorf("监控配置格式无效")
+	}
+	for key, target := range targets {
+		if strings.TrimSpace(key) == "" || target.MinPrice < 0 || target.MaxPrice < 0 ||
+			(target.Selected && target.MinPrice <= 0) || (target.MaxPrice > 0 && target.MaxPrice < target.MinPrice) {
+			return nil, fmt.Errorf("商品 %s 的价格保护范围无效；勾选监控前必须设置大于 0 的底价，封顶价不能低于底价", key)
+		}
+	}
+	return targets, nil
 }
 
 func (s *Server) handleTargets(w http.ResponseWriter, r *http.Request) {
@@ -844,34 +892,32 @@ func (s *Server) handleTargets(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.Method == http.MethodPost {
-			bodyBytes, err := io.ReadAll(r.Body)
+			targets, err := decodeTargetConfiguration(r)
 			if err != nil {
 				jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 				return
 			}
-
-			var wrapper struct {
-				Targets map[string]config.Target `json:"targets"`
-			}
-			targets := make(map[string]config.Target)
-			if err := json.Unmarshal(bodyBytes, &wrapper); err == nil && len(wrapper.Targets) > 0 {
-				targets = wrapper.Targets
-			} else {
-				_ = json.Unmarshal(bodyBytes, &targets)
-			}
-
 			storeTargets := make(map[string]map[string]config.Target)
 			for key, tgt := range targets {
 				stID := tgt.StoreID
 				cleanKey := key
 				if idx := strings.Index(cleanKey, ":"); idx > 0 {
+					if stID != "" && stID != cleanKey[:idx] {
+						jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "监控商品的店铺标识不一致"})
+						return
+					}
 					if stID == "" {
 						stID = cleanKey[:idx]
 					}
 					cleanKey = cleanKey[idx+1:]
 				}
 				if stID == "" {
-					stID = "default"
+					jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "全店铺保存必须明确指定每个商品的店铺"})
+					return
+				}
+				if store, err := s.db.GetStore(stID); err != nil || store == nil {
+					jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "监控商品所属店铺不存在"})
+					return
 				}
 				if storeTargets[stID] == nil {
 					storeTargets[stID] = make(map[string]config.Target)
@@ -880,7 +926,10 @@ func (s *Server) handleTargets(w http.ResponseWriter, r *http.Request) {
 			}
 
 			for stID, tgts := range storeTargets {
-				_ = s.db.SaveStoreTargets(stID, tgts)
+				if err := s.db.SaveStoreTargets(stID, tgts); err != nil {
+					jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": "监控配置保存失败: " + err.Error()})
+					return
+				}
 			}
 			s.eng.Log(fmt.Sprintf("💾 已保存全店铺监控配置（共 %d 个监控条目）", len(targets)), "INFO", "all", "全部店铺")
 			jsonResponse(w, http.StatusOK, map[string]any{"success": true, "message": "全店铺监控配置保存成功", "count": len(targets)})
@@ -906,20 +955,17 @@ func (s *Server) handleTargets(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodPost {
-		bodyBytes, err := io.ReadAll(r.Body)
+		targets, err := decodeTargetConfiguration(r)
 		if err != nil {
 			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}
 
-		var wrapper struct {
-			Targets map[string]config.Target `json:"targets"`
-		}
-		targets := make(map[string]config.Target)
-		if err := json.Unmarshal(bodyBytes, &wrapper); err == nil && len(wrapper.Targets) > 0 {
-			targets = wrapper.Targets
-		} else {
-			_ = json.Unmarshal(bodyBytes, &targets)
+		for key, target := range targets {
+			if (target.StoreID != "" && target.StoreID != store.ID) || strings.Contains(key, ":") {
+				jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "监控商品与当前店铺不一致"})
+				return
+			}
 		}
 
 		if s.db != nil {
@@ -943,16 +989,15 @@ func (s *Server) handleRepriceStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.isAllStores(r) {
-		results := s.eng.StartAll()
-		jsonResponse(w, http.StatusOK, map[string]any{"success": true, "message": "已启动全部店铺巡检", "results": results})
+		s.handleRepriceStartAll(w, r)
 		return
 	}
-	store, _, _ := s.getStoreContext(r)
-	storeID := "default"
-	if store != nil {
-		storeID = store.ID
+	store, _, err := s.getStoreContext(r)
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"success": false, "error": err.Error()})
+		return
 	}
-	ok, msg := s.eng.StartReprice(storeID)
+	ok, msg := s.eng.StartReprice(store.ID)
 	jsonResponse(w, http.StatusOK, map[string]any{"success": ok, "message": msg})
 }
 
@@ -966,12 +1011,12 @@ func (s *Server) handleRepricePause(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusOK, map[string]any{"success": true, "message": "已切换全部店铺巡检暂停状态", "results": results})
 		return
 	}
-	store, _, _ := s.getStoreContext(r)
-	storeID := "default"
-	if store != nil {
-		storeID = store.ID
+	store, _, err := s.getStoreContext(r)
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
 	}
-	ok, msg := s.eng.PauseReprice(storeID)
+	ok, msg := s.eng.PauseReprice(store.ID)
 	jsonResponse(w, http.StatusOK, map[string]any{"success": ok, "message": msg})
 }
 
@@ -985,18 +1030,27 @@ func (s *Server) handleRepriceStop(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusOK, map[string]any{"success": true, "message": "已停止全部店铺巡检", "results": results})
 		return
 	}
-	store, _, _ := s.getStoreContext(r)
-	storeID := "default"
-	if store != nil {
-		storeID = store.ID
+	store, _, err := s.getStoreContext(r)
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
 	}
-	ok, msg := s.eng.StopReprice(storeID)
+	ok, msg := s.eng.StopReprice(store.ID)
 	jsonResponse(w, http.StatusOK, map[string]any{"success": ok, "message": msg})
 }
 
 func (s *Server) handleRepriceStartAll(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.db == nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "请先添加自己的店铺"})
+		return
+	}
+	stores, err := s.db.GetStores()
+	if err != nil || len(stores) == 0 {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "请先添加自己的店铺"})
 		return
 	}
 	results := s.eng.StartAll()
@@ -1017,12 +1071,12 @@ func (s *Server) handleRepriceStatus(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusOK, s.eng.GetStatus("all"))
 		return
 	}
-	store, _, _ := s.getStoreContext(r)
-	storeID := "default"
-	if store != nil {
-		storeID = store.ID
+	store, _, err := s.getStoreContext(r)
+	if err != nil {
+		jsonResponse(w, http.StatusOK, engine.Status{})
+		return
 	}
-	jsonResponse(w, http.StatusOK, s.eng.GetStatus(storeID))
+	jsonResponse(w, http.StatusOK, s.eng.GetStatus(store.ID))
 }
 
 func (s *Server) handleFollowUpload(w http.ResponseWriter, r *http.Request) {
@@ -1087,20 +1141,31 @@ func (s *Server) handleFollowUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	header := rows[0]
-	urlIdx, stockIdx, minPriceIdx := 2, 0, 1
+	urlIdx, stockIdx, minPriceIdx, tsinIdx, priceIdx, maxPriceIdx := -1, -1, -1, -1, -1, -1
 	for idx, h := range header {
-		hu := strings.ToUpper(h)
-		if strings.Contains(hu, "URL") || strings.Contains(h, "链接") {
+		h = strings.TrimSpace(h)
+		hu := strings.ToUpper(strings.ReplaceAll(strings.ReplaceAll(h, " ", ""), "_", ""))
+		if strings.Contains(hu, "URL") || strings.Contains(h, "链接") || hu == "PLID" {
 			urlIdx = idx
+		} else if strings.Contains(hu, "TSIN") {
+			tsinIdx = idx
+		} else if strings.Contains(h, "封顶") || strings.Contains(h, "最高") || hu == "MAXPRICE" {
+			maxPriceIdx = idx
+		} else if strings.Contains(h, "初始售价") || h == "售价" || hu == "SELLINGPRICE" {
+			priceIdx = idx
 		} else if strings.Contains(h, "库存") || strings.Contains(hu, "STOCK") {
 			stockIdx = idx
-		} else if strings.Contains(h, "最低") || strings.Contains(h, "底价") || strings.Contains(hu, "PRICE") {
+		} else if strings.Contains(h, "最低") || strings.Contains(h, "底价") || hu == "PRICE" || hu == "MINPRICE" {
 			minPriceIdx = idx
 		}
 	}
+	if urlIdx < 0 {
+		// Older three-column files used positional headers.
+		urlIdx, stockIdx, minPriceIdx = 2, 0, 1
+	}
 
 	var items []engine.FollowItem
-	for _, row := range rows[1:] {
+	for rowIndex, row := range rows[1:] {
 		if urlIdx >= len(row) {
 			continue
 		}
@@ -1108,24 +1173,28 @@ func (s *Server) handleFollowUpload(w http.ResponseWriter, r *http.Request) {
 		if u == "" {
 			continue
 		}
-		stock := 1
-		if stockIdx < len(row) {
-			if s, err := strconv.Atoi(strings.TrimSpace(row[stockIdx])); err == nil && s > 0 {
-				stock = s
+		item := engine.FollowItem{URL: u, Stock: 1}
+		for _, field := range []struct {
+			index int
+			name  string
+			value *int
+		}{
+			{stockIdx, "库存", &item.Stock}, {minPriceIdx, "底价", &item.MinPrice},
+			{priceIdx, "初始售价", &item.SellingPrice}, {maxPriceIdx, "封顶价", &item.MaxPrice},
+		} {
+			if field.index >= 0 && field.index < len(row) && strings.TrimSpace(row[field.index]) != "" {
+				value, err := strconv.Atoi(strings.TrimSpace(row[field.index]))
+				if err != nil || value < 0 || (field.index == stockIdx && value == 0) {
+					jsonResponse(w, http.StatusBadRequest, map[string]any{"success": false, "error": fmt.Sprintf("Excel 第 %d 行的%s必须填写有效整数，库存须大于 0", rowIndex+2, field.name)})
+					return
+				}
+				*field.value = value
 			}
 		}
-		minP := 0
-		if minPriceIdx < len(row) {
-			if p, err := strconv.Atoi(strings.TrimSpace(row[minPriceIdx])); err == nil {
-				minP = p
-			}
+		if tsinIdx >= 0 && tsinIdx < len(row) {
+			item.TSINID = strings.TrimSpace(row[tsinIdx])
 		}
-
-		items = append(items, engine.FollowItem{
-			URL:      u,
-			Stock:    stock,
-			MinPrice: minP,
-		})
+		items = append(items, item)
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]any{
@@ -1144,28 +1213,64 @@ func (s *Server) handleFollowTemplate(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	w.Header().Set("Content-Disposition", "attachment; filename=\"批量导入模板.xlsx\"")
 
-	// If file exists on disk, serve it directly
-	if data, err := os.ReadFile("批量导入模板.xlsx"); err == nil {
-		_, _ = w.Write(data)
-		return
-	}
-	if data, err := os.ReadFile("待上传摸板.xlsx"); err == nil {
-		_, _ = w.Write(data)
-		return
-	}
-
-	// Otherwise, dynamically generate standard template
+	// Always generate the current template; old on-disk templates lack per-variant columns.
 	f := excelize.NewFile()
 	defer f.Close()
 	sheet := f.GetSheetName(0)
 	_ = f.SetCellValue(sheet, "A1", "库存")
 	_ = f.SetCellValue(sheet, "B1", "最低价")
 	_ = f.SetCellValue(sheet, "C1", "URL")
+	_ = f.SetCellValue(sheet, "D1", "TSIN（可选）")
+	_ = f.SetCellValue(sheet, "E1", "初始售价（可选）")
+	_ = f.SetCellValue(sheet, "F1", "封顶价（可选）")
 	_ = f.SetCellValue(sheet, "A2", 10)
 	_ = f.SetCellValue(sheet, "B2", 150)
 	_ = f.SetCellValue(sheet, "C2", "https://www.takealot.com/mens-short-sleeve-serengeti-2-tone-bush-shirt/PLID60569699?colour_variant=Green&size=5XL")
+	_ = f.SetColWidth(sheet, "A", "B", 14)
+	_ = f.SetColWidth(sheet, "C", "C", 65)
+	_ = f.SetColWidth(sheet, "D", "F", 23)
 
 	_ = f.Write(w)
+}
+
+func (s *Server) followStoreContext(r *http.Request) (*db.Store, error) {
+	if s.isAllStores(r) {
+		return nil, fmt.Errorf("请先选择一个具体店铺")
+	}
+	requested := strings.TrimSpace(r.Header.Get("X-Store-Id"))
+	if requested == "" {
+		requested = strings.TrimSpace(r.URL.Query().Get("store_id"))
+	}
+	store, _, err := s.getStoreContext(r)
+	if err != nil || store == nil || (requested != "" && requested != store.ID) {
+		return nil, fmt.Errorf("请选择有效的商品所属店铺")
+	}
+	return store, nil
+}
+
+func (s *Server) handleFollowPreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	store, err := s.followStoreContext(r)
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	var req struct {
+		Items []engine.FollowItem `json:"items"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Items) == 0 {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "请先导入商品链接"})
+		return
+	}
+	preview, err := s.eng.PreviewFollowBatch(r.Context(), store.ID, req.Items)
+	if err != nil {
+		jsonResponse(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]any{"success": true, "variants": preview.Variants, "errors": preview.Errors})
 }
 
 func (s *Server) handleFollowStart(w http.ResponseWriter, r *http.Request) {
@@ -1174,10 +1279,10 @@ func (s *Server) handleFollowStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	store, _, _ := s.getStoreContext(r)
-	storeID := "default"
-	if store != nil {
-		storeID = store.ID
+	store, err := s.followStoreContext(r)
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
 	}
 
 	var req struct {
@@ -1188,7 +1293,11 @@ func (s *Server) handleFollowStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ok, msg := s.eng.RunFollowBatch(storeID, req.Items)
+	if err := engine.ValidateFollowItems(req.Items); err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	ok, msg := s.eng.RunFollowBatch(store.ID, req.Items)
 	jsonResponse(w, http.StatusOK, map[string]any{"success": ok, "message": msg})
 }
 
@@ -1723,10 +1832,12 @@ func (s *Server) handleRepriceHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	storeID := ""
 	if !s.isAllStores(r) {
-		store, _, _ := s.getStoreContext(r)
-		if store != nil {
-			storeID = store.ID
+		store, _, err := s.getStoreContext(r)
+		if err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
 		}
+		storeID = store.ID
 	} else {
 		storeID = "all"
 	}
@@ -1753,10 +1864,12 @@ func (s *Server) handleFollowHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	storeID := ""
 	if !s.isAllStores(r) {
-		store, _, _ := s.getStoreContext(r)
-		if store != nil {
-			storeID = store.ID
+		store, _, err := s.getStoreContext(r)
+		if err != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
 		}
+		storeID = store.ID
 	} else {
 		storeID = "all"
 	}
@@ -1976,12 +2089,12 @@ func (s *Server) handleOfficialBatchList(w http.ResponseWriter, r *http.Request)
 	if limit <= 0 {
 		limit = 50
 	}
-	store, _, _ := s.getStoreContext(r)
-	storeID := ""
-	if store != nil {
-		storeID = store.ID
+	store, _, err := s.getStoreContext(r)
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
 	}
-	records, err := s.db.GetStoreBatchJobs(storeID, limit)
+	records, err := s.db.GetStoreBatchJobs(store.ID, limit)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -2050,7 +2163,11 @@ func (s *Server) handleLeadtimeOrders(w http.ResponseWriter, r *http.Request) {
 	var resultItems []LeadtimeOrderItem
 
 	// 1. 尝试从 Takealot 官方 API 获取销售订单
-	store, client, _ := s.getStoreContext(r)
+	store, client, contextErr := s.getStoreContext(r)
+	if contextErr != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": contextErr.Error()})
+		return
+	}
 	if client != nil {
 		startDate := now.AddDate(0, 0, -14).Format("2006-01-02")
 		endDate := now.Format("2006-01-02")
@@ -2254,65 +2371,16 @@ func (s *Server) handleShipments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	store, _, _ := s.getStoreContext(r)
-	storeID := ""
-	if store != nil {
-		storeID = store.ID
+	store, _, err := s.getStoreContext(r)
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
 	}
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
-	list, err := s.db.GetStoreShipments(storeID, status)
+	list, err := s.db.GetStoreShipments(store.ID, status)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
-	}
-
-	// 如果库内无草稿发货单且请求 status 为 draft，自动创建默认演示草稿
-	if len(list) == 0 && (status == "draft" || status == "") {
-		nowStr := time.Now().Format("2006-01-02 15:04:05")
-		demoItems := []db.ShipmentItemRecord{
-			{
-				OrderID:          20883190,
-				OrderItemID:      30918231,
-				OrderDate:        "16 Sep 2026 22:30:48",
-				DueDate:          "07 Oct 2026",
-				TSIN:             "101718045",
-				SKU:              "9902422768821",
-				Title:            "Fingertip Pulse Oximeter , SpO2 和Heart Rate Monitor",
-				ImageURL:         "",
-				SellingPrice:     296,
-				DC:               "JHB",
-				LeadtimeStock:    554,
-				DemandQty:        1,
-				ShipQty:          1,
-				ActualWeight:     0.28,
-				VolumetricWeight: 0.35,
-				WeighStatus:      "pending",
-			},
-			{
-				OrderID:          20883195,
-				OrderItemID:      30918239,
-				OrderDate:        "15 Sep 2026 19:45:14",
-				DueDate:          "06 Oct 2026",
-				TSIN:             "101829301",
-				SKU:              "9902432885082",
-				Title:            "5-In-1 Book Cover Guide & Precision Paper Cutter Tool Set",
-				ImageURL:         "",
-				SellingPrice:     349,
-				DC:               "JHB",
-				LeadtimeStock:    210,
-				DemandQty:        2,
-				ShipQty:          2,
-				ActualWeight:     0.65,
-				VolumetricWeight: 0.80,
-				WeighStatus:      "pending",
-			},
-		}
-		shipmentNo := fmt.Sprintf("SH-JHB-%d", time.Now().Unix()%1000000)
-		created, _ := s.db.CreateStoreShipment(storeID, shipmentNo, "draft", "JHB", "待送约堡仓常规批次", demoItems)
-		if created != nil {
-			list, _ = s.db.GetStoreShipments(storeID, status)
-		}
-		_ = nowStr
 	}
 
 	jsonResponse(w, http.StatusOK, list)
@@ -2351,12 +2419,12 @@ func (s *Server) handleShipmentCreate(w http.ResponseWriter, r *http.Request) {
 		req.Status = "draft"
 	}
 
-	store, _, _ := s.getStoreContext(r)
-	storeID := "default"
-	if store != nil {
-		storeID = store.ID
+	store, _, err := s.getStoreContext(r)
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
 	}
-	shipment, err := s.db.CreateStoreShipment(storeID, req.ShipmentNumber, req.Status, req.DestinationDC, req.Notes, req.Items)
+	shipment, err := s.db.CreateStoreShipment(store.ID, req.ShipmentNumber, req.Status, req.DestinationDC, req.Notes, req.Items)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -2462,13 +2530,12 @@ func (s *Server) handleOfferQuickUpdate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	store, client, _ := s.getStoreContext(r)
-	storeID := "default"
-	storeName := "默认店铺"
-	if store != nil {
-		storeID = store.ID
-		storeName = store.Name
+	store, client, err := s.getStoreContext(r)
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
 	}
+	storeID, storeName := store.ID, store.Name
 	cacheIdentifier := strings.TrimSpace(req.TSIN)
 	if cacheIdentifier == "" {
 		cacheIdentifier = targetOfferID
@@ -2549,24 +2616,15 @@ func (s *Server) handleBookings(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusOK, []any{})
 		return
 	}
-	store, _, _ := s.getStoreContext(r)
-	storeID := ""
-	if store != nil {
-		storeID = store.ID
+	store, _, err := s.getStoreContext(r)
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
 	}
-	list, err := s.db.GetStoreBookings(storeID)
+	list, err := s.db.GetStoreBookings(store.ID)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
-	}
-
-	// 若空，初始化一条示例预约
-	if len(list) == 0 {
-		tomorrow := time.Now().Add(24 * time.Hour).Format("2006-01-02")
-		b, _ := s.db.CreateStoreBooking(storeID, 1, "JHB", tomorrow, "10:00 - 12:00", "Courier Guy", "GP 882-901", "预约送约堡1号中转仓")
-		if b != nil {
-			list, _ = s.db.GetStoreBookings(storeID)
-		}
 	}
 
 	jsonResponse(w, http.StatusOK, list)
@@ -2597,12 +2655,12 @@ func (s *Server) handleBookingCreate(w http.ResponseWriter, r *http.Request) {
 		req.BookingDate = time.Now().Add(24 * time.Hour).Format("2006-01-02")
 	}
 
-	store, _, _ := s.getStoreContext(r)
-	storeID := "default"
-	if store != nil {
-		storeID = store.ID
+	store, _, err := s.getStoreContext(r)
+	if err != nil {
+		jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
 	}
-	b, err := s.db.CreateStoreBooking(storeID, req.ShipmentID, req.DC, req.BookingDate, req.TimeSlot, req.Carrier, req.VehicleReg, req.Notes)
+	b, err := s.db.CreateStoreBooking(store.ID, req.ShipmentID, req.DC, req.BookingDate, req.TimeSlot, req.Carrier, req.VehicleReg, req.Notes)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -2683,7 +2741,7 @@ func (s *Server) handleStores(w http.ResponseWriter, r *http.Request) {
 				Status: stStatus,
 			})
 		}
-		activeID := "default"
+		activeID := ""
 		if len(stores) > 0 {
 			activeID = stores[0].ID
 		}
@@ -2705,8 +2763,12 @@ func (s *Server) handleStores(w http.ResponseWriter, r *http.Request) {
 		if req.Name == "" {
 			req.Name = "未命名店铺"
 		}
+		if strings.TrimSpace(req.Authorization) == "" {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "请填写自己的店铺授权凭据"})
+			return
+		}
 		if req.Authorization != "" {
-			tempClient := api.NewClient(req.Authorization, req.ProxyURL)
+			tempClient := s.clientPool.GetOrCreate(req.ID, req.Authorization, req.ProxyURL)
 			if seller, err := tempClient.GetSellerInfo(); err == nil && seller != nil && seller.DisplayName != "" {
 				req.Name = seller.DisplayName
 			}
@@ -2724,8 +2786,21 @@ func (s *Server) handleStores(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case http.MethodPut:
-		var req db.Store
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		body, err := io.ReadAll(r.Body)
+		var identity struct {
+			ID string `json:"id"`
+		}
+		if err != nil || json.Unmarshal(body, &identity) != nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "店铺配置格式无效"})
+			return
+		}
+		existing, err := s.db.GetStore(identity.ID)
+		if identity.ID == "" || err != nil || existing == nil {
+			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": "要修改的店铺不存在，请先添加店铺"})
+			return
+		}
+		req := *existing
+		if err := json.Unmarshal(body, &req); err != nil {
 			jsonResponse(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}

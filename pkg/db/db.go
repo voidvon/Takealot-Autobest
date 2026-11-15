@@ -610,12 +610,6 @@ func (d *DB) DeleteStore(id string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	var count int
-	_ = d.conn.QueryRow(`SELECT COUNT(*) FROM stores`).Scan(&count)
-	if count <= 1 {
-		return fmt.Errorf("系统中至少保留一个店铺，无法删除最后一个店铺")
-	}
-
 	tx, err := d.conn.Begin()
 	if err != nil {
 		return err
@@ -749,7 +743,22 @@ func (d *DB) SaveStoreTargets(storeID string, targets map[string]config.Target) 
 	}
 	defer stmt.Close()
 
+	canonicalTSINs := make(map[string]bool)
+	for key := range targets {
+		if parts := strings.SplitN(key, "/", 2); len(parts) == 2 {
+			canonicalTSINs[parts[0]] = true
+		}
+	}
 	for key, t := range targets {
+		// A canonical TSIN/PLID replaces the old TSIN-only monitor, otherwise
+		// both rows can independently drive the same offer with different floors.
+		if parts := strings.SplitN(key, "/", 2); len(parts) == 2 {
+			if _, err := tx.Exec(`DELETE FROM reprice_targets WHERE store_id = ? AND target_key = ?`, storeID, parts[0]); err != nil {
+				return err
+			}
+		} else if canonicalTSINs[key] {
+			continue
+		}
 		sel := 0
 		if t.Selected {
 			sel = 1
@@ -764,6 +773,54 @@ func (d *DB) SaveStoreTargets(storeID string, targets map[string]config.Target) 
 
 func (d *DB) SaveTargets(targets map[string]config.Target) error {
 	return d.SaveStoreTargets("default", targets)
+}
+
+// SaveStoreTargetPrices atomically updates limits without changing monitor selection.
+// Keep legacy TSIN-only targets in sync with their canonical TSIN/PLID key.
+func (d *DB) SaveStoreTargetPrices(storeID string, targets map[string]config.Target) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if storeID == "" {
+		storeID = "default"
+	}
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for key, target := range targets {
+		if target.MinPrice <= 0 || target.MaxPrice < 0 || (target.MaxPrice > 0 && target.MaxPrice < target.MinPrice) {
+			return fmt.Errorf("规格 %s 的价格保护范围无效", key)
+		}
+		tsin := strings.SplitN(key, "/", 2)[0]
+		// Move a legacy TSIN-only monitor to its canonical key without enabling it.
+		if _, err := tx.Exec(`UPDATE reprice_targets SET target_key = ?
+			WHERE store_id = ? AND target_key = ?
+			AND NOT EXISTS (SELECT 1 FROM reprice_targets WHERE store_id = ? AND target_key = ?)`, key, storeID, tsin, storeID, key); err != nil {
+			return err
+		}
+		result, err := tx.Exec(`UPDATE reprice_targets SET min_price = ?, max_price = ?, updated_at = CURRENT_TIMESTAMP
+			WHERE store_id = ? AND (target_key = ? OR target_key = ?)`, target.MinPrice, target.MaxPrice, storeID, key, tsin)
+		if err != nil {
+			return err
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if count == 0 {
+			if _, err := tx.Exec(`INSERT INTO reprice_targets (store_id, target_key, selected, min_price, max_price, updated_at)
+				VALUES (?, ?, 0, ?, ?, CURRENT_TIMESTAMP)`, storeID, key, target.MinPrice, target.MaxPrice); err != nil {
+				return err
+			}
+		}
+		if tsin != key {
+			if _, err := tx.Exec(`DELETE FROM reprice_targets WHERE store_id = ? AND target_key = ?`, storeID, tsin); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
 }
 
 // UpdateTargetMinPrice updates or inserts min_price in reprice_targets for a single target_key
@@ -800,6 +857,22 @@ func (d *DB) UpdateTargetMinPrice(storeID, targetKey string, minPrice int) error
 			updated_at = CURRENT_TIMESTAMP
 	`, storeID, targetKey, minPrice)
 	return err
+}
+
+// LoadStoreTarget reads the latest saved configuration for an existing monitor.
+// Missing rows and read failures must prevent a worker from submitting stale decisions.
+func (d *DB) LoadStoreTarget(storeID, targetKey string) (config.Target, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if storeID == "" {
+		storeID = "default"
+	}
+	target := config.Target{StoreID: storeID}
+	var selected int
+	err := d.conn.QueryRow(`SELECT selected, min_price, max_price FROM reprice_targets WHERE store_id = ? AND target_key = ?`, storeID, targetKey).
+		Scan(&selected, &target.MinPrice, &target.MaxPrice)
+	target.Selected = selected == 1
+	return target, err
 }
 
 func (d *DB) LoadStoreTargets(storeID string) (map[string]config.Target, error) {

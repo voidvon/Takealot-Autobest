@@ -211,9 +211,12 @@ func TestStoreCRUDAndIsolation(t *testing.T) {
 	if len(storesAfter) != 1 {
 		t.Errorf("删除后应剩下 1 个店铺，实际: %d", len(storesAfter))
 	}
-	// Try deleting the last store should fail
-	if err := database.DeleteStore("default"); err == nil {
-		t.Errorf("删除最后一个店铺应当报错拦截")
+	// Removing the last store returns the application to its empty initial state.
+	if err := database.DeleteStore("default"); err != nil {
+		t.Fatalf("删除最后一个店铺失败: %v", err)
+	}
+	if stores, err := database.GetStores(); err != nil || len(stores) != 0 {
+		t.Fatalf("删除后未恢复为空店铺: %+v %v", stores, err)
 	}
 }
 

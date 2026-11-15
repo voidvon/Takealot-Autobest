@@ -183,6 +183,12 @@ export interface TargetConfig {
   store_id?: string
 }
 
+export interface VariantPriceConfig {
+  key: string
+  min_price: number
+  max_price: number
+}
+
 export interface SystemConfig {
   authorization: string
   price_decrease_step: number
@@ -199,9 +205,30 @@ export interface FollowItem {
   url: string
   stock: number
   min_price: number
+  max_price?: number
+  selling_price?: number
+  tsin_id?: string
+}
+
+export interface FollowVariant extends FollowItem {
+  tsin_id: string
+  plid: string
+  title: string
+  colour: string
+  size: string
+  best_price: number
+  can_follow: boolean
+  skip_reason: string
+}
+
+export interface FollowPreviewError {
+  row: number
+  url: string
+  message: string
 }
 
 export interface RepriceHistoryRecord {
+  store_id?: string
   id: number
   target_key: string
   tsin_id: string

@@ -697,10 +697,20 @@ func (c *Client) GetMPVByTSIN(tsinID string) (*MPVResult, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, fmt.Errorf("MPV 响应解析失败: %w", err)
 	}
-	if len(data.Results) == 0 {
-		return nil, fmt.Errorf("未找到 TSIN %s 的 MPV 数据", tsinID)
+	var matched *MPVResult
+	for i := range data.Results {
+		if AnyToString(data.Results[i].TSINID) != tsinID {
+			continue
+		}
+		if matched != nil {
+			return nil, fmt.Errorf("TSIN %s 的 MPV 数据身份不唯一", tsinID)
+		}
+		matched = &data.Results[i]
 	}
-	return &data.Results[0], nil
+	if matched == nil {
+		return nil, fmt.Errorf("未找到精确匹配 TSIN %s 的 MPV 数据", tsinID)
+	}
+	return matched, nil
 }
 
 func (c *Client) GetMPVByPLID(plid string) ([]MPVResult, error) {

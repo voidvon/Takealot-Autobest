@@ -146,8 +146,10 @@ export const CatalogTab: React.FC<CatalogTabProps> = ({ currentStore }) => {
         target_key: targetKey,
       })
       toast.success(
-        '商品参数与保底底价已更新生效！',
-        `售价: R ${editOffer.sellingPrice || 0}，防亏底价已同步更新为: R ${editOffer.newMinPrice || 0}`
+        '商品参数已保存',
+        editOffer.newMinPrice === undefined
+          ? `售价: R ${editOffer.sellingPrice || 0}，已保留原有防亏底价`
+          : `售价: R ${editOffer.sellingPrice || 0}，防亏底价已同步更新为: R ${editOffer.newMinPrice}`
       )
       setEditOffer({ open: false })
       loadOffers(page)
@@ -479,8 +481,8 @@ export const CatalogTab: React.FC<CatalogTabProps> = ({ currentStore }) => {
                                 rrp: item.rrp,
                                 leadtimeDays: item.leadtime_days,
                                 status: item.status,
-                                newMinPrice: Math.max(1, Math.round(item.selling_price / storeRatio)),
-                                autoCalcMinPrice: true,
+                                newMinPrice: undefined,
+                                autoCalcMinPrice: false,
                               })
                             }
                             title="修改售价与库存"
@@ -564,7 +566,7 @@ export const CatalogTab: React.FC<CatalogTabProps> = ({ currentStore }) => {
                 onChange={(e) => {
                   const val = parseInt(e.target.value) || 0
                   setEditOffer((prev) => {
-                    const autoCalc = prev.autoCalcMinPrice ?? true
+                    const autoCalc = prev.autoCalcMinPrice ?? false
                     const calcMin = autoCalc ? Math.max(1, Math.round(val / storeRatio)) : prev.newMinPrice
                     return {
                       ...prev,
@@ -599,7 +601,7 @@ export const CatalogTab: React.FC<CatalogTabProps> = ({ currentStore }) => {
               <label className="flex items-center gap-1.5 text-[11px] text-primary cursor-pointer select-none">
                 <input
                   type="checkbox"
-                  checked={editOffer.autoCalcMinPrice ?? true}
+                  checked={editOffer.autoCalcMinPrice ?? false}
                   onChange={(e) => {
                     const checked = e.target.checked
                     setEditOffer((prev) => ({
@@ -616,23 +618,23 @@ export const CatalogTab: React.FC<CatalogTabProps> = ({ currentStore }) => {
 
             <Input
               type="number"
-              value={editOffer.newMinPrice || ''}
+              value={editOffer.newMinPrice ?? ''}
               onChange={(e) => {
-                const val = parseInt(e.target.value) || 0
+                const val = e.target.value === '' ? undefined : parseInt(e.target.value) || 0
                 setEditOffer((prev) => ({ ...prev, newMinPrice: val, autoCalcMinPrice: false }))
               }}
-              placeholder="防亏底价"
+              placeholder="留空保留已保存底价"
               className="h-8 font-mono text-xs"
             />
 
             <div className="text-[11px]">
-              {(editOffer.autoCalcMinPrice ?? true) ? (
+              {(editOffer.autoCalcMinPrice ?? false) ? (
                 <span className="text-blue-600 dark:text-blue-400">
                   💡 联动计算已生效：售价 R {editOffer.sellingPrice || 0} ÷ {storeRatio}倍 ≈ <strong>R {editOffer.newMinPrice || 0}</strong>
                 </span>
               ) : (
                 <span className="text-muted-foreground">
-                  ✏️ 当前为自定义底价模式（勾选右上角可恢复按 {storeRatio} 倍自动折算）
+                  保留已保存底价；输入新底价或勾选按 {storeRatio} 倍折算后，保存时才会更新
                 </span>
               )}
             </div>

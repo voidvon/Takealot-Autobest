@@ -450,3 +450,51 @@ func TestQuickPriceUpdateResolvesTSINToSellerOfferBeforePatch(t *testing.T) {
 		t.Fatalf("TSIN cache not updated: %+v %v", cached, err)
 	}
 }
+
+func TestOfferSyncPreservesSavedFloor(t *testing.T) {
+	database, err := db.New(filepath.Join(t.TempDir(), "sync.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	store, err := database.EnsureDefaultStore("test", 1, 1, 5, 1, 1000, 120)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const key = "100368112/98946292"
+	if err := database.SaveStoreTargets(store.ID, map[string]config.Target{key: {Selected: true, MinPrice: 210}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SaveStoreCachedOffers(store.ID, []db.CachedOffer{{Key: key, TSINID: "100368112", PLID: "98946292", SellingPrice: 300}}); err != nil {
+		t.Fatal(err)
+	}
+	pool := api.NewClientPool()
+	pool.SetRequestTransport(func(_, _ string, req *http.Request, _ func(*http.Request) (*http.Response, error)) (*http.Response, error) {
+		if req.Method != http.MethodGet || req.URL.Path != "/v2/offers/detailed" {
+			t.Fatalf("unexpected sync request: %s %s", req.Method, req.URL)
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"offers":[{"offer_id":987,"tsin_id":100368112,"selling_price":120,"tsin":{"productline_id":98946292}}]}`))}, nil
+	})
+	eng := engine.NewEngine(nil, pool, database, nil)
+	srv := NewServer(config.NewManager(t.TempDir()), pool, eng, database, nil, nil, nil, nil, "test")
+	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8000/api/offers?sync=true", nil)
+	req.Header.Set("X-Store-Id", store.ID)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("sync failed: %d %s", w.Code, w.Body.String())
+	}
+	var response struct {
+		Offers []OfferViewModel `json:"offers"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Offers) != 1 || response.Offers[0].SellingPrice != 120 || response.Offers[0].MinPrice != 210 {
+		t.Fatalf("sync did not preserve displayed floor: %+v", response.Offers)
+	}
+	targets, err := database.LoadStoreTargets(store.ID)
+	if err != nil || targets[key].MinPrice != 210 {
+		t.Fatalf("sync overwrote saved floor: %+v %v", targets, err)
+	}
+}

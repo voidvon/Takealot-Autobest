@@ -15,6 +15,9 @@ import { AccountModal } from './components/account/AccountModal'
 import { UpdateModal } from './components/updater/UpdateModal'
 import { Toaster } from './components/ui/toaster'
 import { toast } from './components/ui/use-toast'
+import { Button } from './components/ui/button'
+import { Card, CardContent } from './components/ui/card'
+import { Plus, Store as StoreIcon } from 'lucide-react'
 
 const VALID_TABS: TabId[] = ['dashboard', 'repricer', 'catalog', 'sales', 'follow', 'settings']
 
@@ -37,6 +40,7 @@ export const App: React.FC = () => {
 
   // Multi-Store State
   const [stores, setStores] = useState<Store[]>([])
+  const [storesLoaded, setStoresLoaded] = useState(false)
   const [currentStoreId, setCurrentStoreId] = useState<string>(() => getActiveStoreId())
   const [isAddStoreOpen, setIsAddStoreOpen] = useState(false)
 
@@ -108,12 +112,18 @@ export const App: React.FC = () => {
   const loadStores = async () => {
     try {
       const res = await api.getStores()
-      if (res.stores && res.stores.length > 0) {
-        setStores(res.stores)
+      const nextStores = res.stores || []
+      setStores(nextStores)
+      setStoresLoaded(true)
+      if (nextStores.length === 0) {
+        setCurrentStoreId('')
+        setActiveStoreId('')
+        setStatus({ is_running: false, is_paused: false, total_checked: 0, total_repriced: 0, countdown_seconds: 0, last_run_time: '' })
+      } else {
         if (currentStoreId !== 'all') {
-          const exists = res.stores.find((s) => s.id === currentStoreId)
+          const exists = nextStores.find((s) => s.id === currentStoreId)
           if (!exists) {
-            const nextId = res.active_store_id || res.stores[0].id
+            const nextId = res.active_store_id || nextStores[0].id
             setCurrentStoreId(nextId)
             setActiveStoreId(nextId)
           }
@@ -268,6 +278,10 @@ export const App: React.FC = () => {
 
   // Engine controls for active store
   const handleStartReprice = async () => {
+    if (stores.length === 0) {
+      setIsAddStoreOpen(true)
+      return
+    }
     if (!accountStatus?.eligible) {
       setIsAccountModalOpen(true)
       return
@@ -352,6 +366,10 @@ export const App: React.FC = () => {
           }
         }}
         onStartAllReprice={async () => {
+          if (stores.length === 0) {
+            setIsAddStoreOpen(true)
+            return
+          }
           if (!accountStatus?.eligible) {
             setIsAccountModalOpen(true)
             return
@@ -388,6 +406,18 @@ export const App: React.FC = () => {
 
         {/* Tab Content Area: keyed with currentStoreId so switching store resets and reloads views cleanly */}
         <main key={`${activeTab}-${currentStoreId}`} className="flex-1 min-h-0 h-full p-4 sm:p-6 lg:p-8 overflow-y-auto min-w-0">
+          {!storesLoaded ? (
+            <p role="status" className="text-sm text-muted-foreground">正在读取店铺...</p>
+          ) : stores.length === 0 && activeTab !== 'settings' ? (
+            <Card>
+              <CardContent className="flex flex-col items-center gap-4 py-16 text-center">
+                <StoreIcon className="h-10 w-10 text-muted-foreground" />
+                <h2 className="text-lg font-semibold">尚未添加店铺</h2>
+                <p className="max-w-md text-sm text-muted-foreground">添加自己的 Takealot 店铺并填写授权凭据后，即可同步商品和配置自动竞价。</p>
+                <Button onClick={() => setIsAddStoreOpen(true)} className="gap-2"><Plus className="h-4 w-4" />添加第一个店铺</Button>
+              </CardContent>
+            </Card>
+          ) : <>
           {activeTab === 'dashboard' && (
             <DashboardTab
               onNavigate={handleSelectTab}
@@ -419,6 +449,7 @@ export const App: React.FC = () => {
               onCheckUpdate={() => checkForUpdate(true)}
             />
           )}
+          </>}
         </main>
       </div>
 

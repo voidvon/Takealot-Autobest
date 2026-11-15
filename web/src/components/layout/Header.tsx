@@ -5,7 +5,7 @@ import { WindowControls } from './WindowControls'
 import { WindowsControls } from './WindowsControls'
 import { Button } from '../ui/button'
 import { Badge } from '../ui/badge'
-import { Play, Pause, Square, Sparkles } from 'lucide-react'
+import { Play, Pause, Square, Sparkles, Plus } from 'lucide-react'
 import { formatMinutesSeconds } from '../../lib/countdown'
 
 interface HeaderProps {
@@ -107,6 +107,11 @@ export const Header: React.FC<HeaderProps> = ({
               />
             </div>
           )}
+          {stores.length === 0 && onOpenAddStore && (
+            <Button variant="outline" size="sm" onClick={onOpenAddStore} className="gap-1.5 text-xs h-8">
+              <Plus className="h-3.5 w-3.5" />添加店铺
+            </Button>
+          )}
         </div>
 
         {/* Engine Live Metrics & Controls */}
@@ -158,6 +163,7 @@ export const Header: React.FC<HeaderProps> = ({
                 variant="default"
                 size="sm"
                 onClick={onStartReprice}
+                disabled={stores.length === 0}
                 loading={loadingAction}
                 className="gap-1.5 text-xs h-8"
               >

@@ -160,10 +160,6 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
   }
 
   const handleDeleteStore = async (store: Store) => {
-    if (stores.length <= 1) {
-      toast.warning('无法删除', '系统中至少保留一个店铺，无法删除最后一个店铺！')
-      return
-    }
     if (!confirm(`确定要删除店铺 [${store.name}] (ID: ${store.id}) 吗？\n删除后该店铺的历史监控记录将被清理，此操作不可撤回。`)) {
       return
     }
@@ -388,16 +384,14 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                         <Edit2 className="h-3 w-3 mr-1" />
                         编辑
                       </Button>
-                      {stores.length > 1 && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDeleteStore(store)}
-                          className="h-7 text-[11px] px-2 text-destructive hover:bg-destructive/10"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
-                      )}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleDeleteStore(store)}
+                        className="h-7 text-[11px] px-2 text-destructive hover:bg-destructive/10"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
                     </div>
 
                     {!isCurrent && (
@@ -581,7 +575,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                     className="text-xs font-mono"
                   />
                   <p className="text-[11px] text-muted-foreground">
-                    手动修改售价时自动以此倍数计算底价 (如售价 R200 ÷ 2 = 底价 R100)
+                    手动改价并勾选“随售价自动折算”时使用 (如售价 R200 ÷ 2 = 底价 R100)
                   </p>
                 </div>
               </div>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react'
-import { api } from '../../api/client'
-import type { OfferViewModel, PriorityStatus, TargetConfig, RepriceHistoryRecord, Store } from '../../types'
+import { api, getActiveStoreId } from '../../api/client'
+import type { OfferViewModel, PriorityStatus, TargetConfig, VariantPriceConfig, RepriceHistoryRecord, Store } from '../../types'
+import { VariantPriceDialog } from './VariantPriceDialog'
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/card'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
@@ -25,7 +26,18 @@ import {
   CloudDownload,
   PackageCheck,
   Calculator,
+  SlidersHorizontal,
 } from 'lucide-react'
+
+function offerIdentity(offer: OfferViewModel): string {
+  return `${offer.store_id || 'default'}:${offer.key}`
+}
+
+function productIdentity(offer: OfferViewModel): string {
+  const plid = offer.plid?.replace(/^PLID/i, '').trim()
+  return plid && /^\d+$/.test(plid) && Number(plid) > 0
+    ? `${offer.store_id || 'default'}:PLID${plid}` : offerIdentity(offer)
+}
 
 export interface RepricerTabProps {
   currentStore?: Store
@@ -43,6 +55,18 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
   const [statusFilter, setStatusFilter] = useState<'all' | PriorityStatus | 'selected'>('all')
   const [savingTargets, setSavingTargets] = useState(false)
   const [hasChanges, setHasChanges] = useState(false)
+  const [variantOffers, setVariantOffers] = useState<OfferViewModel[] | null>(null)
+  // Use the full store list, so a search cannot hide sibling variants from the dialog.
+  const productVariants = useMemo(() => {
+    const groups = new Map<string, OfferViewModel[]>()
+    for (const offer of offers) {
+      const key = productIdentity(offer)
+      const group = groups.get(key) || []
+      group.push(offer)
+      groups.set(key, group)
+    }
+    return groups
+  }, [offers])
 
   // Running logs state
   const [historyRecords, setHistoryRecords] = useState<RepriceHistoryRecord[]>([])
@@ -89,12 +113,7 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
       if (res.success && res.offers) {
         setOffers(res.offers)
         setHasChanges(false)
-        if (sync && res.auto_updated_min_count && res.auto_updated_min_count > 0) {
-          toast.success(
-            '同步完成，已自动刷新防亏底价',
-            `检测到平台后台零售价变动，已自动按折算倍数重新计算并更新了 ${res.auto_updated_min_count} 款商品的防亏底价！`
-          )
-        } else if (sync) {
+        if (sync) {
           toast.success('全量同步成功', `已成功从店铺同步 ${res.offers.length} 款商品数据`)
         }
       }
@@ -148,41 +167,50 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
   }, [historyRecords, searchQuery])
 
   // Handlers for modifying targets
-  const handleToggleSelect = (key: string) => {
+  const handleToggleSelect = (item: OfferViewModel) => {
     setOffers((prev) =>
-      prev.map((o) => (o.key === key ? { ...o, selected: !o.selected } : o))
+      prev.map((o) => (offerIdentity(o) === offerIdentity(item) ? { ...o, selected: !o.selected } : o))
     )
     setHasChanges(true)
   }
 
-  const handleMinPriceChange = (key: string, val: number) => {
+  const handleMinPriceChange = (item: OfferViewModel, val: number) => {
     setOffers((prev) =>
-      prev.map((o) => (o.key === key ? { ...o, min_price: val } : o))
+      prev.map((o) => (offerIdentity(o) === offerIdentity(item) ? { ...o, min_price: val } : o))
     )
     setHasChanges(true)
   }
 
-  const handleMaxPriceChange = (key: string, val: number) => {
+  const handleMaxPriceChange = (item: OfferViewModel, val: number) => {
     setOffers((prev) =>
-      prev.map((o) => (o.key === key ? { ...o, max_price: val } : o))
+      prev.map((o) => (offerIdentity(o) === offerIdentity(item) ? { ...o, max_price: val } : o))
     )
     setHasChanges(true)
   }
 
   const handleSelectAllFiltered = (selected: boolean) => {
-    const keys = new Set(filteredOffers.map((o) => o.key))
+    const keys = new Set(filteredOffers.map(offerIdentity))
     setOffers((prev) =>
-      prev.map((o) => (keys.has(o.key) ? { ...o, selected } : o))
+      prev.map((o) => (keys.has(offerIdentity(o)) ? { ...o, selected } : o))
     )
     setHasChanges(true)
   }
 
   const handleSaveAllTargets = async () => {
+    const invalid = offers.find((offer) =>
+      !Number.isInteger(offer.min_price || 0) || !Number.isInteger(offer.max_price || 0) ||
+      (offer.min_price || 0) < 0 || (offer.max_price || 0) < 0 ||
+      (offer.selected && !(offer.min_price > 0)) ||
+      ((offer.max_price || 0) > 0 && offer.max_price < offer.min_price))
+    if (invalid) {
+      toast.error('请先配置价格保护', `TSIN ${invalid.tsin_id}：勾选监控须设置正整数底价，封顶价不能低于底价`)
+      return
+    }
     setSavingTargets(true)
     try {
       const targetsMap: Record<string, TargetConfig> = {}
       offers.forEach((o) => {
-        targetsMap[o.key] = {
+        targetsMap[getActiveStoreId() === 'all' ? offerIdentity(o) : o.key] = {
           selected: o.selected,
           min_price: o.min_price || 0,
           max_price: o.max_price || 0,
@@ -199,6 +227,19 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
     } finally {
       setSavingTargets(false)
     }
+  }
+
+  const handleSaveVariantPrices = async (prices: VariantPriceConfig[]) => {
+    if (!variantOffers?.length) return
+    const storeID = variantOffers[0].store_id || currentStore?.id || 'default'
+    const res = await api.saveVariantPrices(prices, storeID)
+    if (!res.success) throw new Error(res.message)
+    const saved = new Map(prices.map((price) => [price.key, price]))
+    setOffers((previous) => previous.map((offer) => {
+      const price = (offer.store_id || 'default') === storeID ? saved.get(offer.key) : undefined
+      return price ? { ...offer, min_price: price.min_price, max_price: price.max_price } : offer
+    }))
+    toast.success('规格价格配置已保存', `已分别更新 ${prices.length} 个规格的底价和封顶价`)
   }
 
   // Handle manual price edit submit
@@ -555,6 +596,8 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
                 </TableRow>
               ) : (
                 filteredOffers.map((item) => {
+                  const siblings = productVariants.get(productIdentity(item)) || [item]
+                  const hasVariants = siblings.length > 1
                   const hasImage = !!item.image_url
                   const isWinning = item.priority_status === 'winning'
                   const isLosing = item.priority_status === 'losing'
@@ -564,7 +607,7 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
 
                   return (
                     <TableRow
-                      key={item.key}
+                      key={offerIdentity(item)}
                       className={item.selected ? 'bg-muted/40' : undefined}
                     >
                       {/* Checkbox */}
@@ -572,7 +615,7 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
                         <input
                           type="checkbox"
                           checked={item.selected}
-                          onChange={() => handleToggleSelect(item.key)}
+                          onChange={() => handleToggleSelect(item)}
                           className="rounded text-primary focus:ring-primary h-4 w-4 cursor-pointer"
                         />
                       </TableCell>
@@ -686,7 +729,19 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
 
                       {/* Guard Min / Max Price Inputs */}
                       <TableCell className="text-center">
-                        <div className="flex items-center justify-center gap-1.5">
+                        {hasVariants ? (
+                          <div className="space-y-1.5">
+                            <Button variant="outline" size="sm" onClick={() => setVariantOffers(siblings)}
+                              className="gap-1.5 text-xs" aria-label={`配置规格价格 PLID ${item.plid}`}>
+                              <SlidersHorizontal className="h-3.5 w-3.5" />
+                              配置规格价格（{siblings.length}）
+                            </Button>
+                            <div className="text-[10px] text-muted-foreground font-mono">
+                              本规格：{item.min_price > 0 ? formatCurrency(item.min_price) : '未设底价'}
+                              {' / '}{item.max_price > 0 ? formatCurrency(item.max_price) : '不限上限'}
+                            </div>
+                          </div>
+                        ) : <div className="flex items-center justify-center gap-1.5">
                           <div className="w-20">
                             <Input
                               type="number"
@@ -694,7 +749,7 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
                               value={item.min_price || ''}
                               placeholder="底价"
                               onChange={(e) =>
-                                handleMinPriceChange(item.key, parseInt(e.target.value) || 0)
+                                handleMinPriceChange(item, Number(e.target.value) || 0)
                               }
                               className="w-full text-center h-8 text-xs font-mono font-semibold"
                               title="最低保护底价（R）：无论竞品降至何价，绝不突破此底价"
@@ -708,13 +763,13 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
                               value={item.max_price || ''}
                               placeholder="封顶"
                               onChange={(e) =>
-                                handleMaxPriceChange(item.key, parseInt(e.target.value) || 0)
+                                handleMaxPriceChange(item, Number(e.target.value) || 0)
                               }
                               className="w-full text-center h-8 text-xs font-mono"
                               title="最高封顶价（R）：对手提价或独家时回升的最大上限"
                             />
                           </div>
-                        </div>
+                        </div>}
                         {item.min_price > 0 && item.selling_price < item.min_price && (
                           <div className="text-[10px] text-rose-500 font-medium mt-1 flex items-center justify-center gap-1">
                             <ShieldAlert className="h-3 w-3" />
@@ -755,7 +810,7 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
                               newPrice: item.selling_price,
                               newRrp: item.rrp,
                               newMinPrice: item.min_price && item.min_price > 0 ? item.min_price : calculatedMin,
-                              autoCalcMinPrice: true,
+                              autoCalcMinPrice: !(item.min_price > 0),
                             })
                           }}
                           className="h-8 px-2 text-xs gap-1"
@@ -877,7 +932,7 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
                         {/* 5. 店铺 */}
                         <TableCell className="text-center whitespace-nowrap">
                           <Badge variant="outline" className="text-[11px] font-normal">
-                            {r.store_name || 'Huihengxin'}
+                            {r.store_name || r.store_id || '未记录店铺'}
                           </Badge>
                         </TableCell>
 
@@ -941,6 +996,10 @@ export const RepricerTab: React.FC<RepricerTabProps> = ({ currentStore, onRefres
         tsin={previewImage.tsin}
         plid={previewImage.plid}
       />
+
+      {variantOffers && (
+        <VariantPriceDialog offers={variantOffers} onClose={() => setVariantOffers(null)} onSave={handleSaveVariantPrices} />
+      )}
 
       {/* Manual Quick Edit Modal */}
       <Dialog

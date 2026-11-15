@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,15 +34,15 @@ type Config struct {
 }
 
 type Manager struct {
-	mu     sync.RWMutex
-	cfg    Config
-	file   string
+	mu      sync.RWMutex
+	cfg     Config
+	file    string
 	baseDir string
 }
 
 func NewManager(baseDir string) *Manager {
 	m := &Manager{
-		file:    ConfigFile,
+		file:    filepath.Join(baseDir, ConfigFile),
 		baseDir: baseDir,
 		cfg: Config{
 			PriceDecreaseStep: 1,
@@ -63,7 +64,7 @@ func (m *Manager) Load() {
 	defer m.mu.Unlock()
 
 	// 1. Try config.json
-	data, err := os.ReadFile(ConfigFile)
+	data, err := os.ReadFile(m.file)
 	if err == nil {
 		var loaded Config
 		if err := json.Unmarshal(data, &loaded); err == nil {
@@ -76,7 +77,7 @@ func (m *Manager) Load() {
 	}
 
 	// Fallback to can.ini
-	if iniData, err := os.ReadFile(LegacyCanIni); err == nil {
+	if iniData, err := os.ReadFile(filepath.Join(m.baseDir, LegacyCanIni)); err == nil {
 		lines := strings.Split(string(iniData), "\n")
 		if len(lines) >= 7 {
 			if v, err := strconv.Atoi(strings.TrimSpace(lines[2])); err == nil {

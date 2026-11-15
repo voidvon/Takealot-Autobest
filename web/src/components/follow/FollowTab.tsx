@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { api } from '../../api/client'
-import type { FollowItem, BatchJobRecord, BatchStatusResponse } from '../../types'
+import type { FollowItem, FollowVariant, FollowPreviewError, BatchJobRecord, BatchStatusResponse } from '../../types'
+import { FollowVariantReview } from './FollowVariantReview'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '../ui/card'
 import { Button } from '../ui/button'
 import { Badge } from '../ui/badge'
@@ -14,7 +15,6 @@ import {
   FileSpreadsheet,
   CheckCircle2,
   AlertCircle,
-  Play,
   Download,
   Trash2,
   ExternalLink,
@@ -30,6 +30,11 @@ interface FollowTabProps {
   onNavigateLogs: () => void
 }
 
+function followSourceURL(value: string): string | undefined {
+  const plid = value.match(/PLID(\d+)/i)?.[1] || (/^\d+$/.test(value) ? value : '')
+  return plid ? `https://www.takealot.com/x/PLID${plid}` : undefined
+}
+
 export const FollowTab: React.FC<FollowTabProps> = ({ onNavigateLogs }) => {
   const [activeTab, setActiveTab] = useState('excel-follow')
 
@@ -39,6 +44,15 @@ export const FollowTab: React.FC<FollowTabProps> = ({ onNavigateLogs }) => {
   const [submitting, setSubmitting] = useState(false)
   const [dragActive, setDragActive] = useState(false)
   const [fileName, setFileName] = useState('')
+  const [previewing, setPreviewing] = useState(false)
+  const [variants, setVariants] = useState<FollowVariant[]>([])
+  const [previewErrors, setPreviewErrors] = useState<FollowPreviewError[]>([])
+
+  const updateItems = (next: FollowItem[]) => {
+    setItems(next)
+    setVariants([])
+    setPreviewErrors([])
+  }
 
   // --- Official Batch Queue State ---
   const [batchJobs, setBatchJobs] = useState<BatchJobRecord[]>([])
@@ -91,12 +105,14 @@ export const FollowTab: React.FC<FollowTabProps> = ({ onNavigateLogs }) => {
   }, [activeTab])
 
   const handleFileUpload = async (file: File) => {
+    if (loading || previewing || submitting) return
     if (!file.name.endsWith('.xlsx') && !file.name.endsWith('.xls')) {
       toast.warning('请上传 Excel 格式文件 (.xlsx)')
       return
     }
     setLoading(true)
     setFileName(file.name)
+    updateItems([])
     try {
       const res = await api.uploadFollowExcel(file)
       if (res.success) {
@@ -131,13 +147,34 @@ export const FollowTab: React.FC<FollowTabProps> = ({ onNavigateLogs }) => {
     }
   }
 
-  const handleStartFollow = async () => {
+  const handlePreview = async () => {
     if (items.length === 0) return
-    if (!confirm(`确认立即对这 ${items.length} 款商品执行批量变体解析与自动上架跟卖吗？`)) return
+    setPreviewing(true)
+    setVariants([])
+    setPreviewErrors([])
+    try {
+      const res = await api.previewFollowBatch(items)
+      setVariants(res.variants || [])
+      setPreviewErrors(res.errors || [])
+      if (res.errors?.length) {
+        toast.warning('部分导入行需要修正', `有 ${res.errors.length} 处解析错误，请修正后重新解析`)
+      } else {
+        toast.success('规格解析完成', `已展开 ${res.variants?.length || 0} 个规格，请逐一核对底价`)
+      }
+    } catch (err: any) {
+      toast.error('规格解析失败', err.message)
+    } finally {
+      setPreviewing(false)
+    }
+  }
+
+  const handleStartFollow = async (selectedItems: FollowItem[]) => {
+    if (selectedItems.length === 0) return
+    if (!confirm(`确认上架已勾选的 ${selectedItems.length} 个规格，并分别保存各自的底价和封顶价吗？`)) return
 
     setSubmitting(true)
     try {
-      const res = await api.startFollowBatch(items)
+      const res = await api.startFollowBatch(selectedItems)
       if (res.success) {
         toast.success('批量跟卖任务已在后台启动！', '将自动跳转至运行日志查看实时进度')
         onNavigateLogs()
@@ -217,7 +254,7 @@ export const FollowTab: React.FC<FollowTabProps> = ({ onNavigateLogs }) => {
               <div>
                 <CardTitle className="text-sm sm:text-base font-semibold">批量跟卖表格导入</CardTitle>
                 <CardDescription className="text-xs">
-                  上传 Excel 表格批量导入商品变体，系统自动识别库存、保底底价与商品链接
+                  导入商品链接后展开规格，分别核对每个规格的售价与防亏底价
                 </CardDescription>
               </div>
               <a
@@ -253,7 +290,7 @@ export const FollowTab: React.FC<FollowTabProps> = ({ onNavigateLogs }) => {
                     }
                   }}
                   className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                  disabled={loading}
+                  disabled={loading || previewing || submitting}
                 />
                 <div className="flex flex-col items-center justify-center space-y-3">
                   <div className="h-14 w-14 rounded-2xl bg-primary/10 text-primary flex items-center justify-center shadow-xs">
@@ -268,7 +305,7 @@ export const FollowTab: React.FC<FollowTabProps> = ({ onNavigateLogs }) => {
                         : '点击或拖拽 Excel 文件到此处上传'}
                     </div>
                     <p className="text-xs text-muted-foreground max-w-sm mx-auto">
-                      包含列：库存、最低价、URL/商品链接（支持智能表头识别），系统将自动嗅探全部颜色与尺码变体
+                      兼容库存、最低价、URL 三列表格。可增填 TSIN、初始售价、封顶价；TSIN 留空时展开该链接全部规格。库存仅记录计划备货量，不会设置平台可售库存；平台仓需完成入仓，自有仓库存请在卖家后台配置。
                     </p>
                   </div>
                   <div className="flex items-center gap-2 pt-2">
@@ -288,21 +325,22 @@ export const FollowTab: React.FC<FollowTabProps> = ({ onNavigateLogs }) => {
               <CardHeader className="p-4 sm:p-5 flex flex-row items-center justify-between border-b border-border">
                 <div>
                   <div className="flex items-center gap-2">
-                    <CardTitle className="text-base font-bold">待上架任务清单</CardTitle>
+                    <CardTitle className="text-base font-bold">导入链接与默认价格</CardTitle>
                     <Badge variant="secondary" className="font-mono text-xs">
-                      已识别 {items.length} 个商品
+                      {items.length} 条导入记录
                     </Badge>
                   </div>
                   <CardDescription className="text-xs">
-                    请核对商品链接及预设的初始跟卖库存和保底价格
+                    链接级价格只用于填充初始值，解析后可逐个规格修改；仅上架最终勾选的规格。
                   </CardDescription>
                 </div>
                 <div className="flex items-center gap-2">
                   <Button
                     variant="outline"
                     size="sm"
+                    disabled={previewing || submitting}
                     onClick={() => {
-                      setItems([])
+                      updateItems([])
                       setFileName('')
                     }}
                     className="gap-1 text-xs text-destructive hover:text-destructive"
@@ -313,12 +351,13 @@ export const FollowTab: React.FC<FollowTabProps> = ({ onNavigateLogs }) => {
                   <Button
                     variant="default"
                     size="sm"
-                    loading={submitting}
-                    onClick={handleStartFollow}
+                    loading={previewing}
+                    disabled={submitting}
+                    onClick={handlePreview}
                     className="gap-1.5 text-xs"
                   >
-                    <Play className="h-3.5 w-3.5" />
-                    <span>启动批量自动跟卖</span>
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    <span>解析规格并核对价格</span>
                   </Button>
                 </div>
               </CardHeader>
@@ -327,9 +366,11 @@ export const FollowTab: React.FC<FollowTabProps> = ({ onNavigateLogs }) => {
                   <TableHeader className="bg-muted/40">
                     <TableRow>
                       <TableHead className="w-12 text-center">#</TableHead>
-                      <TableHead>商品目标链接 (Source URL)</TableHead>
-                      <TableHead className="w-28 text-center">初始库存</TableHead>
-                      <TableHead className="w-32 text-center">保底价格 (R)</TableHead>
+                      <TableHead>商品链接 / 指定规格</TableHead>
+                      <TableHead className="w-28 text-center">计划备货量</TableHead>
+                      <TableHead className="w-28 text-center">默认底价 (R)</TableHead>
+                      <TableHead className="w-28 text-center">默认封顶价 (R)</TableHead>
+                      <TableHead className="w-28 text-center">初始售价 (R)</TableHead>
                       <TableHead className="w-20 text-center">操作</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -340,10 +381,10 @@ export const FollowTab: React.FC<FollowTabProps> = ({ onNavigateLogs }) => {
                           {index + 1}
                         </TableCell>
                         <TableCell>
-                          <div className="flex items-center gap-1.5 font-mono text-xs max-w-xl truncate">
+                          <div className="flex items-center gap-1.5 font-mono text-xs max-w-xl truncate mb-2">
                             <span className="truncate text-foreground">{item.url}</span>
                             <a
-                              href={item.url}
+                              href={followSourceURL(item.url)}
                               target="_blank"
                               rel="noreferrer"
                               className="text-primary shrink-0 hover:text-primary/80"
@@ -351,19 +392,27 @@ export const FollowTab: React.FC<FollowTabProps> = ({ onNavigateLogs }) => {
                               <ExternalLink className="h-3 w-3" />
                             </a>
                           </div>
+                          <Input value={item.tsin_id || ''} placeholder="指定 TSIN（留空展开全部规格）"
+                            aria-label={`导入行 ${index + 1} TSIN`} disabled={previewing || submitting}
+                            onChange={(event) => updateItems(items.map((row, i) => i === index ? { ...row, tsin_id: event.target.value.trim() } : row))}
+                            className="h-8 text-xs font-mono max-w-xs" />
                         </TableCell>
-                        <TableCell className="text-center font-mono font-semibold text-xs">
-                          {item.stock}
-                        </TableCell>
-                        <TableCell className="text-center font-mono font-semibold text-xs text-emerald-600 dark:text-emerald-400">
-                          R {item.min_price}
-                        </TableCell>
+                        {(['stock', 'min_price', 'max_price', 'selling_price'] as const).map((field) => (
+                          <TableCell key={field}>
+                            <Input type="number" step="1" min={field === 'stock' ? 1 : 0} value={item[field] || ''}
+                              aria-label={`导入行 ${index + 1} ${field}`} disabled={previewing || submitting}
+                              placeholder={field === 'selling_price' ? '自动' : field === 'max_price' ? '不限' : '待填写'}
+                              onChange={(event) => updateItems(items.map((row, i) => i === index ? { ...row, [field]: Number(event.target.value) } : row))}
+                              className="min-w-20 h-8 text-center text-xs font-mono" />
+                          </TableCell>
+                        ))}
                         <TableCell className="text-center">
                           <Button
                             variant="ghost"
                             size="icon"
                             className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                            onClick={() => setItems((prev) => prev.filter((_, i) => i !== index))}
+                            disabled={previewing || submitting}
+                            onClick={() => updateItems(items.filter((_, i) => i !== index))}
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                           </Button>
@@ -374,6 +423,14 @@ export const FollowTab: React.FC<FollowTabProps> = ({ onNavigateLogs }) => {
                 </Table>
               </div>
             </Card>
+          )}
+          {previewErrors.length > 0 && (
+            <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-xs text-destructive space-y-1">
+              {previewErrors.map((error, index) => <p key={index}>导入行 {error.row}：{error.message}</p>)}
+            </div>
+          )}
+          {variants.length > 0 && (
+            <FollowVariantReview variants={variants} blocked={previewErrors.length > 0} submitting={submitting} onSubmit={handleStartFollow} />
           )}
         </TabsContent>
 

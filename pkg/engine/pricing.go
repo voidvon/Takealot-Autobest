@@ -25,6 +25,20 @@ type priceDecision struct {
 // 我方售价，因此原有逻辑里的跟涨分支永远不可能命中。要实现"跟随涨价"，必须传入
 // 真实的最低竞品价 competitorPrice。
 func decidePrice(curPrice, competitorPrice, bestPrice, minPrice, maxPrice, decreaseStep, increaseStep int, soloConfirmed bool) priceDecision {
+	if curPrice <= 0 {
+		return priceDecision{NewPrice: -1, Reason: "当前售价无效，暂停调价"}
+	}
+	if minPrice > 0 && maxPrice > 0 && minPrice > maxPrice {
+		return priceDecision{NewPrice: -1, Reason: fmt.Sprintf("底价 R%d 高于封顶价 R%d，暂停调价，请修正价格范围", minPrice, maxPrice)}
+	}
+	// 底价约束优先于竞品和步长，外部改价或新设置底价后不能继续维持亏损价。
+	if minPrice > 0 && curPrice < minPrice {
+		return priceDecision{
+			NewPrice: minPrice,
+			Action:   "底价保护",
+			Reason:   fmt.Sprintf("当前售价 R%d 低于防亏底价 R%d，回调至底价 R%d", curPrice, minPrice, minPrice),
+		}
+	}
 	if decreaseStep <= 0 {
 		decreaseStep = 1
 	}

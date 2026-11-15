@@ -19,8 +19,6 @@ import (
 	"context"
 	"takealot/pkg/account"
 	"takealot/pkg/api"
-	"takealot/pkg/config"
-	"takealot/pkg/db"
 	"takealot/pkg/engine"
 	"takealot/pkg/reporter"
 	"takealot/pkg/server"
@@ -40,7 +38,7 @@ var distEmbedFS embed.FS
 var staticHTML []byte
 
 var (
-	Version    = "0.1.17"
+	Version    = "0.1.19"
 	BuildMode  = "development" // "development" 或 "production" (构建时通过 ldflags 注入)
 	ProdCMSURL = "https://takealot.0122.vip"
 	DevCMSURL  = "https://takealot.0122.vip"
@@ -78,57 +76,23 @@ func main() {
 	log.Printf("🌐 运行环境: %s | 会员服务: %s", BuildMode, *cmsURL)
 	log.Println("========================================================")
 
-	// 1. Initialize SQLite Database & Migrate Legacy Data
-	database, err := db.New("takealot.db")
+	// 1. Initialize SQLite. Store records are created only by an explicit add.
+	database, cfgMgr, err := openApplicationData(".")
 	if err != nil {
-		log.Printf("⚠️ SQLite 初始化提示: %v", err)
-	} else {
-		defer database.Close()
-
-		// 自动检测并迁移旧版 GJDATA 到 SQLite
-		if count, err := database.MigrateGJData("GJDATA"); err != nil {
-			log.Printf("⚠️ 迁移旧版 GJDATA 失败: %v", err)
-		} else if count > 0 {
-			log.Printf("📦 成功将旧版 GJDATA 中的 %d 条商品监控数据迁移至 SQLite (takealot.db)，原文件已备份为 GJDATA.migrated.bak", count)
-		}
+		log.Fatalf("SQLite 初始化失败: %v", err)
 	}
+	defer database.Close()
 
-	// 2. Initialize Configuration Manager
-	cfgMgr := config.NewManager(".")
-	cfg := cfgMgr.Get()
-
-	// 3. 确保店铺初始化与 ClientPool 就绪
+	// 3. Load only stores already saved in this data directory. Never create a
+	// placeholder or adopt credentials/targets from neighbouring legacy files.
 	clientPool := api.NewClientPool()
 	if database != nil {
-		defStore, err := database.EnsureDefaultStore(
-			cfg.Authorization,
-			cfg.PriceDecreaseStep,
-			cfg.PriceIncreaseStep,
-			cfg.IntervalMinutes,
-			cfg.BulkStock,
-			cfg.MaxFetchOffers,
-			cfg.RRPPercentage,
-		)
-		if err == nil && defStore != nil {
-			clientPool.GetOrCreate(defStore.ID, defStore.Authorization, defStore.ProxyURL)
-		}
-
 		// 加载全部店铺到 ClientPool
 		if stores, err := database.GetStores(); err == nil {
 			for _, st := range stores {
 				clientPool.GetOrCreate(st.ID, st.Authorization, st.ProxyURL)
 			}
 			log.Printf("🏪 已成功就绪 %d 个店铺实例", len(stores))
-		}
-
-		// 监控商品双向同步保证 SQLite 持久化
-		dbTargets, err := database.LoadStoreTargets("default")
-		if err == nil && len(dbTargets) > 0 {
-			_ = cfgMgr.UpdateTargets(dbTargets)
-		} else if len(cfg.Targets) > 0 {
-			if err := database.SaveStoreTargets("default", cfg.Targets); err == nil {
-				log.Printf("📦 已将现有配置中的 %d 条商品监控数据导入 SQLite", len(cfg.Targets))
-			}
 		}
 	}
 
