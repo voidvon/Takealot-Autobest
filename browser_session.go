@@ -2,11 +2,8 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 	"takealot/pkg/account"
 	"takealot/pkg/browsersession"
 	"takealot/pkg/db"
@@ -14,26 +11,7 @@ import (
 	"time"
 )
 
-func browserProfileRoot() (string, error) {
-	configRoot, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	database, err := filepath.Abs("takealot.db")
-	if err != nil {
-		return "", err
-	}
-	if canonical, e := filepath.EvalSymlinks(database); e == nil {
-		database = canonical
-	}
-	digest := sha256.Sum256([]byte(database))
-	return filepath.Join(configRoot, "Takealot", "browser-sessions", fmt.Sprintf("%x", digest[:12])), nil
-}
-func (a *App) configureBrowserSessions(database *db.DB, eng *engine.Engine, accountMgr *account.Manager) error {
-	root, err := browserProfileRoot()
-	if err != nil {
-		return err
-	}
+func (a *App) configureBrowserSessions(root string, database *db.DB, eng *engine.Engine, accountMgr *account.Manager) error {
 	manager, err := browsersession.New(root, browsersession.NewNativeDriver(), eng.SetVerificationRequired)
 	if err != nil {
 		return err

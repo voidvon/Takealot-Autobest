@@ -19,6 +19,8 @@ import { Button } from './components/ui/button'
 import { Card, CardContent } from './components/ui/card'
 import { Plus, Store as StoreIcon } from 'lucide-react'
 
+import { getPreferences, savePreferences } from './preferences'
+
 const VALID_TABS: TabId[] = ['dashboard', 'repricer', 'catalog', 'sales', 'follow', 'settings']
 
 const getTabFromLocation = (): TabId => {
@@ -82,8 +84,8 @@ export const App: React.FC = () => {
 
   // Dark mode
   const [darkMode, setDarkMode] = useState(() => {
-    const saved = localStorage.getItem('takealot_theme')
-    if (saved) return saved === 'dark'
+    const saved = getPreferences().theme
+    if (saved !== 'system') return saved === 'dark'
     return window.matchMedia('(prefers-color-scheme: dark)').matches
   })
 
@@ -101,11 +103,10 @@ export const App: React.FC = () => {
   useEffect(() => {
     if (darkMode) {
       document.documentElement.classList.add('dark')
-      localStorage.setItem('takealot_theme', 'dark')
     } else {
       document.documentElement.classList.remove('dark')
-      localStorage.setItem('takealot_theme', 'light')
     }
+    savePreferences({ theme: darkMode ? 'dark' : 'light' })
   }, [darkMode])
 
   // Load stores list

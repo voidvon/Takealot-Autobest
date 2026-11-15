@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -75,32 +76,26 @@ func (m *Manager) applyAndRestart(unpackDir string) error {
 	}
 
 	// 5. 启动后台脱离脚本，等待当前进程结束后执行文件覆盖并重新拉起
-	shScript := fmt.Sprintf(`
-pid=%d
-target_app=%q
-new_app=%q
-unpack_dir=%q
-
-# 循环等待当前进程完全退出
-while kill -0 "$pid" 2>/dev/null; do
-    sleep 0.2
-done
-
-# 替换旧应用目录
-rm -rf "$target_app"
-cp -R "$new_app" "$target_app"
-
-# 清除隔离标记避免首次启动安全阻拦
+	shScript := `
+set -eu
+pid=$1
+target_app=$2
+new_app=$3
+unpack_dir=$4
+shift 4
+while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
+staged_app="${target_app}.new"
+backup_app="${target_app}.old"
+cp -R "$new_app" "$staged_app"
+mv "$target_app" "$backup_app"
+if ! mv "$staged_app" "$target_app"; then mv "$backup_app" "$target_app"; exit 1; fi
 xattr -dr com.apple.quarantine "$target_app" 2>/dev/null || true
+open -n "$target_app" --args "$@"
+rm -rf "$backup_app" "$unpack_dir"
+`
+	args := append([]string{"-c", shScript, "takealot-updater", strconv.Itoa(pid), targetAppPath, newAppPath, unpackDir}, m.restartArgs...)
+	cmd := exec.Command("sh", args...)
 
-# 重新启动新应用
-open -n "$target_app"
-
-# 清理解压临时目录
-rm -rf "$unpack_dir"
-`, pid, targetAppPath, newAppPath, unpackDir)
-
-	cmd := exec.Command("sh", "-c", shScript)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true,
 	}

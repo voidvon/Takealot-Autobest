@@ -19,12 +19,11 @@ func TestSubmitFeedbackUsesPublicFormAndCurrentMember(t *testing.T) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/feedback" || r.URL.RawQuery != "" {
 			t.Errorf("unexpected endpoint: %s %s", r.Method, r.URL)
 		}
-		if r.Header.Get("X-API-Key") != "" || r.Header.Get("Authorization") != "" || r.Header.Get("X-Site-Id") != "" {
+		if r.Header.Get("X-API-Key") != "" || r.Header.Get("X-Site-Id") != "" {
 			t.Error("feedback must not carry admin credentials or a hardcoded site selector")
 		}
-		cookie, err := r.Cookie("gocms_user")
-		if err != nil || cookie.Value != "current-member-session" {
-			t.Errorf("missing current member cookie: %v", err)
+		if r.Header.Get("Authorization") != "Bearer current-member-session" || r.Header.Get("Cookie") != "" {
+			t.Error("feedback must carry only the current member Bearer token")
 		}
 		if r.Header.Get("Content-Type") != "application/x-www-form-urlencoded" {
 			t.Error("GoCMS feedback requires a URL-encoded form")
@@ -118,6 +117,6 @@ func TestSubmitFeedbackDoesNotFollowRedirect(t *testing.T) {
 		t.Fatal("redirect accepted")
 	}
 	if leaked.Load() != 0 {
-		t.Fatal("member cookie sent to redirected endpoint")
+		t.Fatal("member token sent to redirected endpoint")
 	}
 }

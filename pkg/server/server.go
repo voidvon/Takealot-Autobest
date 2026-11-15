@@ -25,19 +25,21 @@ import (
 	"takealot/pkg/db"
 	"takealot/pkg/engine"
 	"takealot/pkg/updater"
+	"takealot/pkg/workspace"
 )
 
 type Server struct {
-	cfgMgr     *config.Manager
-	clientPool *api.ClientPool
-	eng        *engine.Engine
-	db         *db.DB
-	accountMgr *account.Manager
-	updaterMgr *updater.Manager
-	mux        *http.ServeMux
-	distFS     fs.FS
-	staticHTML []byte
-	version    string
+	cfgMgr      *config.Manager
+	clientPool  *api.ClientPool
+	eng         *engine.Engine
+	db          *db.DB
+	accountMgr  *account.Manager
+	updaterMgr  *updater.Manager
+	mux         *http.ServeMux
+	distFS      fs.FS
+	staticHTML  []byte
+	version     string
+	preferences *workspace.PreferencesStore
 }
 
 func NewServer(cfgMgr *config.Manager, clientPool *api.ClientPool, eng *engine.Engine, database *db.DB, accountMgr *account.Manager, updaterMgr *updater.Manager, distFS fs.FS, staticHTML []byte, version string) *Server {
@@ -130,7 +132,7 @@ func (s *Server) Handler() http.Handler {
 		// Account access and stop operations remain available without VIP.
 		if !strings.HasPrefix(path, "/api/") ||
 			strings.HasPrefix(path, "/api/account/") || path == "/api/reprice/stop" || path == "/api/reprice/stop_all" || path == "/api/reprice/pause" ||
-			path == "/api/version" {
+			path == "/api/version" || path == "/api/preferences" {
 			s.mux.ServeHTTP(w, r)
 			return
 		}
@@ -158,6 +160,7 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) routes() {
 	s.mux.HandleFunc("/", s.handleIndex)
 	s.mux.HandleFunc("/api/version", s.handleVersion)
+	s.mux.HandleFunc("/api/preferences", s.handlePreferences)
 	s.mux.HandleFunc("/api/account/status", s.handleAccountStatus)
 	s.mux.HandleFunc("/api/account/login", s.handleAccountLogin)
 	s.mux.HandleFunc("/api/account/register", s.handleAccountRegister)

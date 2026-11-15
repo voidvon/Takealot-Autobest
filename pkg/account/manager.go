@@ -2,22 +2,12 @@
 package account
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net"
-	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/zalando/go-keyring"
 )
 
 type User struct {
@@ -52,165 +42,126 @@ type Store interface {
 	Save(string) error
 	Delete() error
 }
-type keyringStore struct{ key string }
-
-func (s keyringStore) Load() (string, error) { return keyring.Get("Takealot-GoCMS", s.key) }
-func (s keyringStore) Save(v string) error   { return keyring.Set("Takealot-GoCMS", s.key, v) }
-func (s keyringStore) Delete() error         { return keyring.Delete("Takealot-GoCMS", s.key) }
 
 type Manager struct {
-	signedOut   bool
-	mu          sync.Mutex
-	base, group string
-	client      *http.Client
-	store       Store
-	token       string
-	status      Status
-	checked     time.Time
-	expiry      time.Time
+	signedOut bool
+	mu        sync.Mutex
+	group     string
+	api       *memberClient
+	store     Store
+	token     string
+	status    Status
+	checked   time.Time
+	expiry    time.Time
 }
 
 func New(base, group string) (*Manager, error) {
-	sum := sha256.Sum256([]byte(strings.TrimRight(base, "/") + "|" + group))
-	return NewWithStore(base, group, keyringStore{hex.EncodeToString(sum[:])})
+	return NewWithStore(base, group, nil)
 }
 func NewWithStore(base, group string, store Store) (*Manager, error) {
-	m := &Manager{base: strings.TrimRight(base, "/"), group: group, store: store, status: Status{State: "signed_out", Message: "请登录会员账号"}}
-	m.client = &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("会员服务不允许重定向") }}
+	api, err := newMemberClient(base)
+	if err != nil {
+		return nil, err
+	}
+	m := &Manager{api: api, group: group, store: store, status: Status{State: "signed_out", Message: "请登录会员账号"}}
 	if base == "" {
 		m.status = Status{State: "not_configured", Message: "尚未配置会员服务，请联系软件管理员"}
 		return m, nil
-	}
-	u, e := url.Parse(m.base)
-	if e != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "localhost" || net.ParseIP(u.Hostname()).IsLoopback()))) {
-		return nil, errors.New("会员服务地址必须为 HTTPS；仅本机开发允许 HTTP")
 	}
 	if group == "" {
 		return nil, errors.New("会员组标识不能为空")
 	}
 	if store != nil {
-		if token, e := store.Load(); e == nil {
+		// The old client stored the raw GoCMS session credential. The same value
+		// is accepted as Bearer, so upgrades keep the existing session and slot.
+		if token, e := store.Load(); e == nil && validBearerToken(token) {
 			m.token = token
 			m.status.Persistent = true
 		}
 	}
 	return m, nil
 }
-func (m *Manager) call(ctx context.Context, method, path string, input, output any) error {
-	var body []byte
-	if input != nil {
-		var e error
-		body, e = json.Marshal(input)
-		if e != nil {
-			return e
+func (m *Manager) saveToken(token string) {
+	m.token = token
+	m.status.Persistent = false
+	if m.store != nil {
+		m.status.Persistent = m.store.Save(token) == nil
+		if !m.status.Persistent {
+			// A rotated-out credential must not survive a failed replacement.
+			_ = m.store.Delete()
 		}
 	}
-	req, e := http.NewRequestWithContext(ctx, method, m.base+"/api/v1"+path, bytes.NewReader(body))
-	if e != nil {
-		return e
+}
+
+func (m *Manager) forgetStoredToken() {
+	m.status.Persistent = false
+	if m.store != nil {
+		_ = m.store.Delete()
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if m.token != "" {
-		req.AddCookie(&http.Cookie{Name: "gocms_user", Value: m.token})
-	}
-	res, e := m.client.Do(req)
-	if e != nil {
-		return &APIError{Code: "service_unavailable", Message: "无法连接会员服务，请检查网络后重试", Status: 503}
-	}
-	defer res.Body.Close()
-	var envelope struct {
-		Data  json.RawMessage `json:"data"`
-		Error APIError        `json:"error"`
-	}
-	if e = json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&envelope); e != nil {
-		return &APIError{Code: "service_unavailable", Message: "会员服务响应异常", Status: 503}
-	}
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		envelope.Error.Status = res.StatusCode
-		if envelope.Error.Code == "" {
-			envelope.Error.Code = "service_error"
-			envelope.Error.Message = "会员请求失败"
-		}
-		return &envelope.Error
-	}
-	if output != nil {
-		if e = json.Unmarshal(envelope.Data, output); e != nil {
-			return &APIError{Code: "service_unavailable", Message: "会员服务数据异常", Status: 503}
-		}
-	}
-	for _, cookie := range res.Cookies() {
-		if cookie.Name == "gocms_user" {
-			m.token = cookie.Value
-			m.status.Persistent = false
-			if m.store != nil {
-				if m.token == "" || cookie.MaxAge < 0 {
-					_ = m.store.Delete()
-				} else {
-					m.status.Persistent = m.store.Save(m.token) == nil
-				}
-			}
-		}
-	}
-	return nil
+}
+
+func (m *Manager) clearToken() {
+	m.token = ""
+	m.forgetStoredToken()
 }
 func (m *Manager) Register(ctx context.Context, username, email, password string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.base == "" {
+	if m.api.base == "" {
 		return &APIError{Code: "not_configured", Message: m.status.Message, Status: 503}
 	}
-	return m.call(ctx, "POST", "/auth/register", map[string]string{"username": username, "email": email, "password": password}, nil)
+	return m.api.call(ctx, "POST", "/auth/register", "", map[string]string{"username": username, "email": email, "password": password}, nil)
 }
 func (m *Manager) ChangePassword(ctx context.Context, oldPassword, newPassword string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.base == "" {
+	if m.api.base == "" {
 		return &APIError{Code: "not_configured", Message: m.status.Message, Status: 503}
 	}
-	if m.token == "" {
+	if m.signedOut || m.token == "" {
 		return &APIError{Code: "unauthorized", Message: "未登录，请先登录账号", Status: 401}
 	}
 	if strings.TrimSpace(oldPassword) == "" {
 		return &APIError{Code: "invalid", Message: "请输入原密码", Status: 400}
 	}
-	if len(newPassword) < 6 {
-		return &APIError{Code: "invalid", Message: "新密码至少需要 6 个字符", Status: 400}
+	if len(oldPassword) > 1024 || len(newPassword) < 8 || len(newPassword) > 1024 {
+		return &APIError{Code: "invalid", Message: "新密码长度须为 8–1024 字节，原密码不能超过 1024 字节", Status: 400}
 	}
 	var out struct {
 		Reauthenticate bool `json:"reauthenticate"`
 	}
-	err := m.call(ctx, "PUT", "/me/password", map[string]string{
+	err := m.api.call(ctx, "PUT", "/me/password", m.token, map[string]string{
 		"old_password": oldPassword,
 		"new_password": newPassword,
 	}, &out)
 	if err != nil {
+		// Wrong old passwords also return 401 (invalid_credentials). Only an
+		// authentication rejection invalidates the current session here.
+		var api *APIError
+		if errors.As(err, &api) && api.Status == 401 && api.Code != "invalid_credentials" {
+			m.refreshError(err)
+		}
 		return err
 	}
 	m.signedOut = true
-	m.status.Eligible = false
-	m.status.Authenticated = false
-	m.status.User = nil
-	m.status.State = "signed_out"
-	m.token = ""
-	if m.store != nil {
-		_ = m.store.Delete()
-	}
+	m.clearToken()
+	m.checked, m.expiry = time.Time{}, time.Time{}
 	m.status = Status{State: "signed_out", Message: "密码修改成功，请重新登录"}
 	return nil
 }
 func (m *Manager) Login(ctx context.Context, identifier, password string) (Status, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.base == "" {
+	if m.api.base == "" {
 		return m.status, &APIError{Code: "not_configured", Message: m.status.Message, Status: 503}
 	}
-	var data struct {
-		User User `json:"user"`
-	}
-	// Always pass the current cookie: GoCMS rotates a live same-account session.
-	if e := m.call(ctx, "POST", "/auth/login", map[string]string{"identifier": identifier, "password": password}, &data); e != nil {
+	// Pass the current Bearer credential so same-account login rotates the
+	// existing session instead of consuming another GoCMS session slot.
+	grant, e := m.api.login(ctx, m.token, identifier, password)
+	if e != nil {
 		return m.status, e
 	}
+	m.saveToken(grant.AccessToken)
 	m.signedOut = false
 	m.checked = time.Time{}
 	return m.refresh(ctx), nil
@@ -222,7 +173,7 @@ func (m *Manager) refresh(ctx context.Context) Status {
 	persistent := m.status.Persistent
 	m.status = Status{State: "signed_out", Message: "请登录会员账号", Persistent: persistent}
 	m.expiry = time.Time{}
-	if m.base == "" {
+	if m.api.base == "" {
 		m.status.State = "not_configured"
 		m.status.Message = "尚未配置会员服务，请联系软件管理员"
 		return m.status
@@ -231,29 +182,17 @@ func (m *Manager) refresh(ctx context.Context) Status {
 		return m.status
 	}
 	var u User
-	if e := m.call(ctx, "GET", "/me", nil, &u); e != nil {
-		var api *APIError
-		if errors.As(e, &api) && api.Status == 401 {
-			m.token = ""
-			if m.store != nil {
-				_ = m.store.Delete()
-			}
-			m.status.Message = "登录已失效，请重新登录"
-		} else {
-			m.status.State = "unavailable"
-			m.status.Message = e.Error()
-		}
-		m.checked = time.Now()
-		return m.status
+	if e := m.api.call(ctx, "GET", "/me", m.token, nil, &u); e != nil {
+		return m.refreshError(e)
+	}
+	if u.ID <= 0 || u.Username == "" {
+		return m.refreshError(invalidResponse())
 	}
 	m.status.User = &u
 	m.status.Authenticated = true
 	var memberships []Membership
-	if e := m.call(ctx, "GET", "/me/memberships", nil, &memberships); e != nil {
-		m.status.State = "unavailable"
-		m.status.Message = e.Error()
-		m.checked = time.Now()
-		return m.status
+	if e := m.api.call(ctx, "GET", "/me/memberships", m.token, nil, &memberships); e != nil {
+		return m.refreshError(e)
 	}
 	m.status.State = "membership_required"
 	m.status.Message = "账号尚无有效 VIP，请联系管理员开通或续期"
@@ -274,6 +213,21 @@ func (m *Manager) refresh(ctx context.Context) Status {
 		m.status.ExpiresAt = g.ExpiresAt
 		break
 	}
+	m.checked = time.Now()
+	return m.status
+}
+
+func (m *Manager) refreshError(err error) Status {
+	var api *APIError
+	if errors.As(err, &api) && api.Status == 401 {
+		m.clearToken()
+		m.status = Status{State: "signed_out", Message: "登录已失效，请重新登录"}
+	} else {
+		m.status.Eligible = false
+		m.status.State = "unavailable"
+		m.status.Message = err.Error()
+	}
+	m.expiry = time.Time{}
 	m.checked = time.Now()
 	return m.status
 }
@@ -300,23 +254,16 @@ func (m *Manager) Logout(ctx context.Context) error {
 	// Fail closed locally even if the remote logout cannot complete; preserve the
 	// credential for retry so an unreachable service does not silently leak a slot.
 	m.signedOut = true
-	m.status.Eligible = false
-	m.status.Authenticated = false
-	m.status.User = nil
-	m.status.State = "signed_out"
-	if m.store != nil {
-		_ = m.store.Delete()
-	}
+	m.status = Status{State: "signed_out", Message: "正在退出登录"}
+	m.checked, m.expiry = time.Time{}, time.Time{}
+	m.forgetStoredToken()
 	if m.token != "" {
-		if e := m.call(ctx, "POST", "/auth/logout", map[string]string{}, nil); e != nil {
+		if e := m.api.call(ctx, "POST", "/auth/logout", m.token, map[string]string{}, nil); e != nil {
 			m.status.Message = "退出未完成，请恢复网络后重试"
 			return e
 		}
 	}
-	m.token = ""
-	if m.store != nil {
-		_ = m.store.Delete()
-	}
+	m.clearToken()
 	m.status = Status{State: "signed_out", Message: "已退出登录"}
 	return nil
 }

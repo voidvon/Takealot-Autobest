@@ -276,7 +276,7 @@ export function AccountModal({
 
                     {!status.persistent && (
                       <p className="text-[11px] text-amber-600 dark:text-amber-400 leading-snug border-t border-border/40 pt-2">
-                        提示：系统安全存储不可用，本次登录仅在当前程序运行期间保留。
+                        提示：登录凭据未能保存到软件文件夹，本次登录仅在当前程序运行期间保留。
                       </p>
                     )}
                   </div>
@@ -327,7 +327,7 @@ export function AccountModal({
 
                       {/* New Password */}
                       <div className="space-y-1">
-                        <label className="text-muted-foreground font-medium">新密码（至少 6 位）</label>
+                        <label className="text-muted-foreground font-medium">新密码（至少 8 位）</label>
                         <div className="relative">
                           <Input
                             type={showNewPassword ? 'text' : 'password'}
@@ -376,7 +376,8 @@ export function AccountModal({
                           onClick={() => void run(async () => {
                             if (!oldPassword.trim()) throw new Error('请输入原密码')
                             if (!newPassword) throw new Error('请输入新密码')
-                            if (newPassword.length < 6) throw new Error('新密码长度不能少于 6 个字符')
+                            const passwordBytes = new TextEncoder().encode(newPassword).length
+                            if (passwordBytes < 8 || passwordBytes > 1024) throw new Error('新密码长度须为 8–1024 字节（英文字母或数字各占 1 字节）')
                             if (newPassword !== confirmNewPassword) throw new Error('两次输入的新密码不一致')
                             const currentUsername = status?.user?.username || ''
                             const res = await api.changeAccountPassword(oldPassword, newPassword)

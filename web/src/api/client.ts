@@ -21,25 +21,23 @@ import type {
   UpdateProgress,
 } from '../types'
 
-let currentStoreId = localStorage.getItem('takealot_active_store_id') || ''
+import { getPreferences, savePreferences } from '../preferences'
+
+let currentStoreId: string | undefined
 
 export function getActiveStoreId(): string {
-  return currentStoreId
+  return currentStoreId ?? getPreferences().active_store_id
 }
 
 export function setActiveStoreId(id: string) {
   currentStoreId = id
-  if (id) {
-    localStorage.setItem('takealot_active_store_id', id)
-  } else {
-    localStorage.removeItem('takealot_active_store_id')
-  }
+  savePreferences({ active_store_id: id })
 }
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const customHeaders: Record<string, string> = {}
-  if (currentStoreId) {
-    customHeaders['X-Store-Id'] = currentStoreId
+  if (getActiveStoreId()) {
+    customHeaders['X-Store-Id'] = getActiveStoreId()
   }
 
   const res = await fetch(url, {

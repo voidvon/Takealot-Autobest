@@ -2,6 +2,10 @@ module takealot
 
 go 1.27.1
 
+// Local runtime patch: a nonpersistent macOS application view. Business/UI state
+// belongs to the explicit portable workspace, never WebKit's global store.
+replace github.com/wailsapp/wails/v2 => ./third_party/wails
+
 require (
 	github.com/wailsapp/go-webview2 v1.0.22
 	github.com/wailsapp/wails/v2 v2.16.0

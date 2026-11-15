@@ -29,35 +29,46 @@ func TestOnlineAccountLifecycle(t *testing.T) {
 	logins := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Cookie") != "" || r.URL.RawQuery != "" {
+			t.Error("member credentials must only use the Authorization header")
+		}
 		if outage {
 			w.WriteHeader(503)
 			_, _ = w.Write([]byte(`{"error":{"code":"service_unavailable","message":"offline"}}`))
 			return
 		}
-		cookie, _ := r.Cookie("gocms_user")
+		authorization := r.Header.Get("Authorization")
 		switch r.URL.Path {
 		case "/api/v1/auth/register":
 			w.WriteHeader(201)
 			_, _ = w.Write([]byte(`{"data":{"user":{"id":1,"username":"alice"}}}`))
-		case "/api/v1/auth/login":
+		case "/api/v1/auth/token":
+			if r.Method != http.MethodPost || r.Header.Get("Content-Type") != "application/json" {
+				t.Error("token login must POST JSON")
+			}
+			var credentials map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&credentials); err != nil || credentials["identifier"] != "alice" || credentials["password"] != "password123" {
+				t.Error("incorrect token login payload")
+			}
 			if limit {
 				w.WriteHeader(409)
 				_, _ = w.Write([]byte(`{"error":{"code":"session_limit_reached","message":"limit"}}`))
 				return
 			}
-			if logins > 0 && (cookie == nil || cookie.Value != token) {
-				t.Error("re-login dropped current cookie")
+			if logins > 0 && authorization != "Bearer "+token {
+				t.Error("re-login dropped current Bearer token")
 			}
 			logins++
 			token = strings.Repeat("t", logins+5)
-			http.SetCookie(w, &http.Cookie{Name: "gocms_user", Value: token, Path: "/", HttpOnly: true})
-			_, _ = w.Write([]byte(`{"data":{"user":{"id":1,"username":"alice"}}}`))
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": tokenGrant{User: User{ID: 1, Username: "alice"}, AccessToken: token, TokenType: "Bearer", ExpiresIn: 3600}})
 		case "/api/v1/auth/logout":
+			if authorization != "Bearer "+token {
+				t.Error("logout dropped current Bearer token")
+			}
 			token = ""
-			http.SetCookie(w, &http.Cookie{Name: "gocms_user", Value: "", Path: "/", MaxAge: -1})
 			_, _ = w.Write([]byte(`{"data":{"ok":true}}`))
 		default:
-			if unauthorized || cookie == nil || cookie.Value != token {
+			if unauthorized || token == "" || authorization != "Bearer "+token {
 				w.WriteHeader(401)
 				_, _ = w.Write([]byte(`{"error":{"code":"authentication_required","message":"login"}}`))
 				return
@@ -108,7 +119,7 @@ func TestOnlineAccountLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !restored.Refresh(ctx).Eligible {
-		t.Fatal("persisted cookie not restored")
+		t.Fatal("persisted token not restored")
 	}
 	memberStatus = "expired"
 	if m.Refresh(ctx).Eligible {
@@ -151,6 +162,12 @@ func TestOnlineAccountLifecycle(t *testing.T) {
 	if err = m.Logout(ctx); err == nil {
 		t.Fatal("offline logout reported success")
 	}
+	if m.GetStatus().Persistent || m.GetStatus().Authenticated || store.token != "" {
+		t.Fatal("offline logout retained persisted or authenticated state")
+	}
+	if err := m.ChangePassword(ctx, "password123", "newpassword"); err == nil {
+		t.Fatal("pending logout credential used for password change")
+	}
 	outage = false
 	if m.Refresh(ctx).Eligible {
 		t.Fatal("failed logout silently restored session")
@@ -159,7 +176,7 @@ func TestOnlineAccountLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	if store.token != "" {
-		t.Fatal("logout failed to clear cookie")
+		t.Fatal("logout failed to clear token")
 	}
 }
 
@@ -182,10 +199,15 @@ func TestChangePassword(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path == "/api/v1/auth/login" {
-			http.SetCookie(w, &http.Cookie{Name: "gocms_user", Value: "token-abc", Path: "/"})
-			_, _ = w.Write([]byte(`{"data":{"user":{"id":1,"username":"alice"}}}`))
+		if r.Header.Get("Cookie") != "" {
+			t.Error("password flow sent Cookie")
+		}
+		if r.URL.Path == "/api/v1/auth/token" {
+			_, _ = w.Write([]byte(`{"data":{"user":{"id":1,"username":"alice"},"access_token":"token-abc","token_type":"Bearer","expires_in":3600}}`))
 			return
+		}
+		if r.Header.Get("Authorization") != "Bearer token-abc" {
+			t.Error("password flow lost Bearer token")
 		}
 		if r.URL.Path == "/api/v1/me" {
 			_, _ = w.Write([]byte(`{"data":{"id":1,"username":"alice"}}`))
@@ -197,8 +219,8 @@ func TestChangePassword(t *testing.T) {
 		}
 		if r.URL.Path == "/api/v1/me/password" && r.Method == http.MethodPut {
 			if failPassword {
-				w.WriteHeader(400)
-				_, _ = w.Write([]byte(`{"error":{"code":"invalid_password","message":"原密码错误"}}`))
+				w.WriteHeader(401)
+				_, _ = w.Write([]byte(`{"error":{"code":"invalid_credentials","message":"原密码错误"}}`))
 				return
 			}
 			var in struct {
@@ -239,11 +261,19 @@ func TestChangePassword(t *testing.T) {
 	if err := m.ChangePassword(ctx, "old", "123"); err == nil {
 		t.Fatal("expected short new password error")
 	}
+	for _, password := range []string{"1234567", strings.Repeat("a", 1025)} {
+		if err := m.ChangePassword(ctx, "old", password); err == nil {
+			t.Fatal("accepted password outside GoCMS limits")
+		}
+	}
 
 	// 3. 原密码错误
 	failPassword = true
 	if err := m.ChangePassword(ctx, "wrong", "newpassword123"); err == nil {
 		t.Fatal("expected error on wrong old password")
+	}
+	if !m.GetStatus().Authenticated || store.token == "" {
+		t.Fatal("wrong password must not discard a valid login")
 	}
 	failPassword = false
 

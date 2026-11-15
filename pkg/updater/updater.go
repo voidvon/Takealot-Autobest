@@ -21,6 +21,8 @@ type Manager struct {
 	repoName        string
 	currentVersion  string
 	onBeforeRestart func()
+	workDir         string
+	restartArgs     []string
 
 	mu            sync.RWMutex
 	progress      Progress
@@ -46,6 +48,11 @@ func NewManager(repoOwner, repoName, currentVersion string, onBeforeRestart func
 		},
 	}
 }
+
+// Configure portable staging and the exact arguments used to reopen this copy.
+// Called during startup, before the manager is exposed to HTTP handlers.
+func (m *Manager) SetWorkDir(path string)       { m.workDir = path }
+func (m *Manager) SetRestartArgs(args []string) { m.restartArgs = append([]string(nil), args...) }
 
 type ghReleaseResponse struct {
 	TagName     string    `json:"tag_name"`
@@ -255,6 +262,10 @@ func (m *Manager) StartApply(assetURL string, useProxy bool) error {
 }
 
 func (m *Manager) runUpdate(assetURL string, useProxy bool) {
+	if m.workDir == "" {
+		m.setProgress("error", 0, 0, 0, "", "更新目录未配置", "请重新启动软件")
+		return
+	}
 	if assetURL == "" {
 		info, err := m.CheckForUpdate(true)
 		if err != nil {
@@ -279,7 +290,7 @@ func (m *Manager) runUpdate(assetURL string, useProxy bool) {
 	m.setProgress("downloading", 0, 0, 0, "", "正在连接下载服务器...", "")
 
 	// 1. 创建临时 zip 文件
-	tmpFile, err := os.CreateTemp("", "takealot_update_*.zip")
+	tmpFile, err := os.CreateTemp(m.workDir, "takealot_update_*.zip")
 	if err != nil {
 		m.setProgress("error", 0, 0, 0, "", "创建临时文件失败", err.Error())
 		return
@@ -371,7 +382,7 @@ func (m *Manager) runUpdate(assetURL string, useProxy bool) {
 
 	// 3. 解压缩更新包
 	m.setProgress("extracting", 100, downloaded, totalBytes, "", "正在解压并校验更新包...", "")
-	unpackDir, err := os.MkdirTemp("", "takealot_unpack_*")
+	unpackDir, err := os.MkdirTemp(m.workDir, "takealot_unpack_*")
 	if err != nil {
 		m.setProgress("error", 0, 0, 0, "", "创建解压临时目录失败", err.Error())
 		return

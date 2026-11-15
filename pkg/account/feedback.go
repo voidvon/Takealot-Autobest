@@ -15,7 +15,7 @@ import (
 // /api/feedback 接收 URL 编码表单，返回 {"ok":true}，与会员 API 的 JSON 协议不同。
 func (m *Manager) SubmitFeedback(ctx context.Context, title, content string) error {
 	m.mu.Lock()
-	if m.base == "" {
+	if m.api.base == "" {
 		m.mu.Unlock()
 		return fmt.Errorf("尚未配置会员服务")
 	}
@@ -23,7 +23,7 @@ func (m *Manager) SubmitFeedback(ctx context.Context, title, content string) err
 		m.mu.Unlock()
 		return fmt.Errorf("未登录，无法提交自动反馈")
 	}
-	base, token, user := m.base, m.token, *m.status.User
+	api, token, user := m.api, m.token, *m.status.User
 	m.mu.Unlock()
 
 	name := user.DisplayName
@@ -40,13 +40,7 @@ func (m *Manager) SubmitFeedback(ctx context.Context, title, content string) err
 		"username":  {user.Username},
 		"member_id": {strconv.FormatInt(user.ID, 10)},
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/feedback", strings.NewReader(form.Encode()))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.AddCookie(&http.Cookie{Name: "gocms_user", Value: token})
-	res, err := m.client.Do(req)
+	res, err := api.do(ctx, http.MethodPost, "/api/feedback", token, "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
 	if err != nil {
 		return fmt.Errorf("无法连接信息反馈服务: %w", err)
 	}

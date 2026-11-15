@@ -4,6 +4,16 @@
 #import <WebKit/WebKit.h>
 #import "native_darwin.h"
 
+// WebKit exposes directory-backed stores through this SPI (macOS 15.2+).
+// Keep it behind runtime capability checks; never fall back to a global store.
+@interface TAWebsiteDataStoreConfiguration : NSObject
+- (instancetype)initWithDirectory:(NSURL *)directory;
+@end
+@interface WKWebsiteDataStore (TAPortableStore)
+- (instancetype)_initWithConfiguration:(id)configuration;
+@end
+static NSMutableDictionary<NSString *,WKWebsiteDataStore *> *portableStores;
+
 @interface TABrowserView : NSObject <WKNavigationDelegate, WKUIDelegate>
 @property WKWebView *view;
 @property NSString *origin;
@@ -29,10 +39,12 @@ static WKWebView *findWebView(NSView *parent) {
 char *browser_start(void) {
     __block char *error=NULL;
     onMain(^{
-        if(@available(macOS 14.0,*)){}else{error=strdup("持久会话需要 macOS 14 或以上");return;}
+        Class storeConfiguration=NSClassFromString(@"_WKWebsiteDataStoreConfiguration");
+        if(![storeConfiguration instancesRespondToSelector:@selector(initWithDirectory:)] || ![WKWebsiteDataStore instancesRespondToSelector:@selector(_initWithConfiguration:)]){error=strdup("文件夹内持久会话需要 macOS 15.2 或以上的 WebKit");return;}
         for(NSWindow *window in NSApp.windows){if([window.title isEqualToString:@"Takealot 掌柜"]){applicationView=findWebView(window.contentView);break;}}
         if(!applicationView){error=strdup("未找到主程序网页视图");return;}
         browserViews=[NSMutableDictionary new];
+        portableStores=[NSMutableDictionary new];
     });
     return error;
 }
@@ -43,11 +55,18 @@ char *browser_create(const char *identifier, const char *profile, const char *or
         if(!applicationView){error=strdup("主窗口尚未就绪");return;}
         TABrowserView *entry=browserViews[key];
         if(!entry){
-            NSString *hex=path.lastPathComponent;
-            if(hex.length!=32){error=strdup("无效的会话标识");return;}
-            NSString *uuid=[NSString stringWithFormat:@"%@-%@-%@-%@-%@",[hex substringWithRange:NSMakeRange(0,8)],[hex substringWithRange:NSMakeRange(8,4)],[hex substringWithRange:NSMakeRange(12,4)],[hex substringWithRange:NSMakeRange(16,4)],[hex substringWithRange:NSMakeRange(20,12)]];
+            if(!path.isAbsolutePath){error=strdup("浏览器资料必须使用绝对目录");return;}
             WKWebViewConfiguration *configuration=[WKWebViewConfiguration new];
-            if(@available(macOS 14.0,*)){configuration.websiteDataStore=[WKWebsiteDataStore dataStoreForIdentifier:[[NSUUID alloc] initWithUUIDString:uuid]];}
+            WKWebsiteDataStore *store=portableStores[path];
+            if(!store){
+                @try {
+                    TAWebsiteDataStoreConfiguration *storeConfig=[[NSClassFromString(@"_WKWebsiteDataStoreConfiguration") alloc] initWithDirectory:[NSURL fileURLWithPath:path isDirectory:YES]];
+                    store=[[WKWebsiteDataStore alloc] _initWithConfiguration:storeConfig];
+                } @catch(NSException *exception) {error=strdup("无法初始化文件夹内的浏览器资料");return;}
+                if(!store){error=strdup("文件夹内的浏览器资料不可用");return;}
+                portableStores[path]=store;
+            }
+            configuration.websiteDataStore=store;
             // Dedicated views have no Wails scripts, script message handlers,
             // URL scheme handlers, or access to the local application bridge.
             entry=[TABrowserView new];entry.origin=expected;

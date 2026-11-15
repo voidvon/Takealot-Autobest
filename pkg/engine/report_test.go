@@ -45,10 +45,15 @@ func TestEngineReporterTrigger(t *testing.T) {
 func TestPriceFetchFailureAutomaticallySubmitsMemberFeedback(t *testing.T) {
 	feedback := make(chan url.Values, 2)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Cookie") != "" {
+			t.Error("member flow sent Cookie")
+		}
+		if r.URL.Path != "/api/v1/auth/token" && r.Header.Get("Authorization") != "Bearer member-session" {
+			t.Error("member Bearer token missing")
+		}
 		switch r.URL.Path {
-		case "/api/v1/auth/login":
-			http.SetCookie(w, &http.Cookie{Name: "gocms_user", Value: "member-session", Path: "/"})
-			_, _ = w.Write([]byte(`{"data":{"user":{"id":7,"username":"member"}}}`))
+		case "/api/v1/auth/token":
+			_, _ = w.Write([]byte(`{"data":{"user":{"id":7,"username":"member"},"access_token":"member-session","token_type":"Bearer","expires_in":3600}}`))
 		case "/api/v1/me":
 			_, _ = w.Write([]byte(`{"data":{"id":7,"username":"member","display_name":"普通会员"}}`))
 		case "/api/v1/me/memberships":
@@ -59,10 +64,6 @@ func TestPriceFetchFailureAutomaticallySubmitsMemberFeedback(t *testing.T) {
 			}
 			if r.Header.Get("X-API-Key") != "" {
 				t.Error("admin key sent")
-			}
-			cookie, err := r.Cookie("gocms_user")
-			if err != nil || cookie.Value != "member-session" {
-				t.Error("member session missing")
 			}
 			if err := r.ParseForm(); err != nil {
 				t.Error(err)

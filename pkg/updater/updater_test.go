@@ -1,6 +1,10 @@
 package updater
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -41,4 +45,26 @@ func TestMatchAsset(t *testing.T) {
 		t.Fatalf("matchAsset returned nil")
 	}
 	t.Logf("Matched asset for current OS/Arch: %s", matched.Name)
+}
+
+func TestDownloadAndExtractionStayInsideWorkspace(t *testing.T) {
+	staging := t.TempDir()
+	m := NewManager("owner", "repo", "0.1.20", nil)
+	m.SetWorkDir(staging)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		entries, err := os.ReadDir(staging)
+		if err != nil || len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), "takealot_update_") {
+			t.Error("download was not staged in the workspace")
+		}
+		_, _ = w.Write([]byte("invalid ZIP fixture"))
+	}))
+	defer server.Close()
+	m.runUpdate(server.URL, false)
+	if m.progress.Status != "error" || !strings.Contains(m.progress.Message, "解压") {
+		t.Fatal("invalid archive unexpectedly accepted", m.progress)
+	}
+	entries, err := os.ReadDir(staging)
+	if err != nil || len(entries) != 0 {
+		t.Fatal("failed update left staging files", err)
+	}
 }

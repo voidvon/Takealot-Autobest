@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"takealot/pkg/api"
+	"takealot/pkg/localstate"
 )
 
 const seller = "https://seller-api.takealot.com"
@@ -88,19 +89,20 @@ func (s *session) lock(ctx context.Context) error {
 func (s *session) unlock() { <-s.requests }
 
 type Manager struct {
-	mu              sync.Mutex
-	configuration   sync.Mutex
-	lifecycle       sync.Mutex
-	root            string
-	driver          Driver
-	available       bool
-	enabled         map[string]bool
-	sessions        map[string]*session
-	directBlocked   map[string]bool
-	changed         func(string, bool, string)
-	closed          bool
-	presentation    sync.Mutex
-	visibleRevision atomic.Uint64
+	mu                 sync.Mutex
+	configuration      sync.Mutex
+	lifecycle          sync.Mutex
+	root               string
+	driver             Driver
+	available          bool
+	unavailableMessage string
+	enabled            map[string]bool
+	sessions           map[string]*session
+	directBlocked      map[string]bool
+	changed            func(string, bool, string)
+	closed             bool
+	presentation       sync.Mutex
+	visibleRevision    atomic.Uint64
 }
 
 func New(root string, driver Driver, changed func(string, bool, string)) (*Manager, error) {
@@ -127,6 +129,9 @@ func (m *Manager) Start() error {
 		return nil
 	}
 	if err := m.driver.Start(); err != nil {
+		m.mu.Lock()
+		m.unavailableMessage = err.Error()
+		m.mu.Unlock()
 		return err
 	}
 	m.mu.Lock()
@@ -168,11 +173,7 @@ func (m *Manager) Configure(storeID, proxy string, enabled bool) error {
 	}
 	settings[storeID] = enabled
 	data, _ := json.Marshal(settings)
-	temp := filepath.Join(m.root, "enabled.json.tmp")
-	err := os.WriteFile(temp, data, 0600)
-	if err == nil {
-		err = os.Rename(temp, filepath.Join(m.root, "enabled.json"))
-	}
+	err := localstate.WriteFile(filepath.Join(m.root, "enabled.json"), data, 0600)
 	if err != nil {
 		m.mu.Unlock()
 		return err
@@ -280,10 +281,14 @@ func (m *Manager) pause(id string, s *session, phase, message string) {
 func (m *Manager) Status(storeID string) Status {
 	m.mu.Lock()
 	enabled, available, s := m.enabled[storeID], m.available, m.sessions[storeID]
+	unavailableMessage := m.unavailableMessage
 	m.mu.Unlock()
 	status := Status{StoreID: storeID, Enabled: enabled, Available: available, Phase: "disabled", Message: "使用直接请求"}
 	if !available {
 		status.Message = "当前平台或运行模式尚未提供内嵌会话"
+		if unavailableMessage != "" {
+			status.Message = unavailableMessage
+		}
 	}
 	if !enabled {
 		m.mu.Lock()

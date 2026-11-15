@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -43,23 +44,23 @@ func (m *Manager) applyAndRestart(unpackDir string) error {
 		m.onBeforeRestart()
 	}
 
-	shScript := fmt.Sprintf(`
-pid=%d
-target_bin=%q
-new_bin=%q
-unpack_dir=%q
-
-while kill -0 "$pid" 2>/dev/null; do
-    sleep 0.2
-done
-
-cp -f "$new_bin" "$target_bin"
-chmod +x "$target_bin"
-"$target_bin" &
+	shScript := `
+set -eu
+pid=$1
+target_bin=$2
+new_bin=$3
+unpack_dir=$4
+shift 4
+while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
+cp "$new_bin" "${target_bin}.new"
+chmod +x "${target_bin}.new"
+mv "${target_bin}.new" "$target_bin"
+"$target_bin" "$@" &
 rm -rf "$unpack_dir"
-`, pid, realExe, newBinPath, unpackDir)
+`
+	args := append([]string{"-c", shScript, "takealot-updater", strconv.Itoa(pid), realExe, newBinPath, unpackDir}, m.restartArgs...)
+	cmd := exec.Command("sh", args...)
 
-	cmd := exec.Command("sh", "-c", shScript)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true,
 	}

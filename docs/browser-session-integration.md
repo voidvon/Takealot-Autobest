@@ -8,9 +8,9 @@
 
 - `pkg/api` 的现有客户端池为每个店铺选择原生浏览器或直接 HTTP 通道；同步、抓价、PATCH 改价及其他业务 API 共用此入口，保留限流、只读重试及取消机制。Authorization 只发往卖家 API，公共 API 不携带店铺 Key。
 - Windows 创建主窗口下的原生子视图，使用专用 STA 消息循环维护 WebView2 的两个页面与同店铺的持久资料目录。隐藏面板只改变显示状态，不销毁会话。通过 WebView2 内部 DevTools API 创建隔离脚本环境并执行同源 fetch，不开启远程调试端口。相关 API 依据 [Microsoft WebView2 文档](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2#calldevtoolsprotocolmethod) 和 [Chromium DevTools 协议](https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-createIsolatedWorld)。
-- macOS 将两个 WKWebView 嵌入 Wails 主视图旁，使用固定资料标识和隔离内容环境。资料标识包含工作区路径；不同店铺、代理、工作区隔离。
+- macOS 将两个 WKWebView 嵌入 Wails 主视图旁，使用当前工作区内的目录资料和隔离内容环境；同一店铺的两个页面共享资料，不同店铺、代理、工作区隔离。目录存储适配需要 macOS 15.2+ 的 WebKit，并在运行时检查能力；不可用时不回退到系统存储。
 - 外部页面没有 Wails 绑定、本地控制接口 URL handler 或主应用脚本；顶层导航限制到对应 API 主机，验证子框架允许 Cloudflare 主机，禁止新窗口。HTTPS 校验保持启用。
-- 会话开关按工作区、店铺保存在用户配置目录，不在源代码、命令行、日志或临时配置中存储 Key。Cookie 留在浏览器自己的资料内。
+- 会话开关和原生浏览器资料统一保存在软件旁的 `data/browser-sessions/`，不在源代码、命令行、日志或临时配置中存储 Key。Cookie 留在浏览器自己的资料内。macOS 主应用视图使用非持久存储，主题和当前店铺改由后端保存到 `data/preferences.json`。
 
 ## 任务暂停与恢复
 

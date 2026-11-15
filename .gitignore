@@ -37,3 +37,9 @@ config.json
 private.key
 .license
 
+# Portable workspaces contain member/seller credentials and browser cookies.
+/data/
+!/third_party/wails/
+!/third_party/wails/**
+/third_party/wails/.git/
+

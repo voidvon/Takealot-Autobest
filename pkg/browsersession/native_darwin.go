@@ -44,7 +44,7 @@ func (macDriver) Create(id, profile, proxy, origin, initialURL string) error {
 	if proxy != "" {
 		return errors.New("macOS 持久会话暂仅支持系统代理/TUN，请清空店铺代理后使用")
 	}
-	a, b, c, d := C.CString(id), C.CString(profileID(profile)), C.CString(origin), C.CString(initialURL)
+	a, b, c, d := C.CString(id), C.CString(profile), C.CString(origin), C.CString(initialURL)
 	defer C.free(unsafe.Pointer(a))
 	defer C.free(unsafe.Pointer(b))
 	defer C.free(unsafe.Pointer(c))
