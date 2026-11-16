@@ -2,16 +2,22 @@ package reporter
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"takealot/pkg/localstate"
 )
 
 // Reporter 定义错误上报接口。
 type Reporter interface {
 	ReportCloudflareBlock(storeName, tsinID, plid, errorMsg string)
 	ReportPriceFetchError(storeName, tsinID, plid, errorMsg string)
+	ReportVariantResolutionError(storeName, tsinID, plid, errorMsg string)
 }
 
 // FeedbackSubmitter 使用普通用户的信息反馈渠道提交，不需要后台权限。
@@ -26,6 +32,7 @@ type CMSReporter struct {
 	mu                sync.Mutex
 	lastReport        map[string]time.Time
 	rateLimitDuration time.Duration
+	statePath         string
 }
 
 func New(submitter FeedbackSubmitter, onError func(error)) *CMSReporter {
@@ -33,27 +40,57 @@ func New(submitter FeedbackSubmitter, onError func(error)) *CMSReporter {
 		submitter:         submitter,
 		onError:           onError,
 		lastReport:        make(map[string]time.Time),
-		rateLimitDuration: 15 * time.Minute,
+		rateLimitDuration: 24 * time.Hour,
 	}
+}
+
+// NewPersistent keeps the report cooldown across restarts of this workspace.
+func NewPersistent(submitter FeedbackSubmitter, onError func(error), statePath string) *CMSReporter {
+	r := New(submitter, onError)
+	r.statePath = statePath
+	data, err := os.ReadFile(statePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return r
+	}
+	if err == nil {
+		err = json.Unmarshal(data, &r.lastReport)
+	}
+	if r.lastReport == nil {
+		r.lastReport = make(map[string]time.Time)
+	}
+	if err != nil && onError != nil {
+		onError(fmt.Errorf("读取反馈去重记录失败: %w", err))
+	}
+	return r
 }
 
 func (r *CMSReporter) shouldRateLimit(key string) bool {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	now := time.Now()
-	if len(r.lastReport) > 2000 {
-		for k, t := range r.lastReport {
-			if now.Sub(t) > 24*time.Hour {
-				delete(r.lastReport, k)
-			}
+	for k, t := range r.lastReport {
+		if now.Sub(t) >= r.rateLimitDuration {
+			delete(r.lastReport, k)
 		}
 	}
 	if last, ok := r.lastReport[key]; ok && now.Sub(last) < r.rateLimitDuration {
+		r.mu.Unlock()
 		return true
 	}
 	// 失败也保留限流，避免服务异常时每轮巡检反复请求。
 	r.lastReport[key] = now
+	var err error
+	if r.statePath != "" {
+		var data []byte
+		data, err = json.Marshal(r.lastReport)
+		if err == nil {
+			err = localstate.WriteFile(r.statePath, data, 0600)
+		}
+	}
+	r.mu.Unlock()
+	if err != nil && r.onError != nil {
+		r.onError(fmt.Errorf("保存反馈去重记录失败: %w", err))
+	}
 	return false
 }
 
@@ -61,13 +98,18 @@ func (r *CMSReporter) report(kind, storeName, tsinID, plid, errorMsg string) {
 	if r == nil || r.submitter == nil {
 		return
 	}
-	key := fmt.Sprintf("%q:%q:%q:%q", kind, storeName, tsinID, plid)
+	cleanPLID := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(plid)), "PLID")
+	productKey := cleanPLID
+	if productKey == "" {
+		productKey = "TSIN:" + tsinID
+	}
+	// Variants on the same product line share a diagnostic report per day.
+	key := fmt.Sprintf("%q:%q:%q", kind, storeName, productKey)
 	if r.shouldRateLimit(key) {
 		return
 	}
 
 	go func() {
-		cleanPLID := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(plid)), "PLID")
 		title := fmt.Sprintf("[Takealot][%s] 店铺: %s | PLID: %s", kind, storeName, plid)
 		if tsinID != "" {
 			title += fmt.Sprintf(" (TSIN: %s)", tsinID)
@@ -80,7 +122,8 @@ TSIN ID: %s
 PLID: %s
 目标接口 URL: https://api.takealot.com/rest/v-1-16-0/product-details/PLID%s
 错误详情: %s
-本轮已暂停该商品调价。`, kind, time.Now().Format(time.RFC3339), storeName, tsinID, plid, cleanPLID, errorMsg)
+本轮跳过该规格竞品跟价，底价保护仍独立执行。
+同店铺、同 PLID、同类异常 24 小时内只反馈一次，逐规格详情见客户端日志。`, kind, time.Now().Format(time.RFC3339), storeName, tsinID, plid, cleanPLID, errorMsg)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -96,4 +139,8 @@ func (r *CMSReporter) ReportCloudflareBlock(storeName, tsinID, plid, errorMsg st
 
 func (r *CMSReporter) ReportPriceFetchError(storeName, tsinID, plid, errorMsg string) {
 	r.report("抓取失败", storeName, tsinID, plid, errorMsg)
+}
+
+func (r *CMSReporter) ReportVariantResolutionError(storeName, tsinID, plid, errorMsg string) {
+	r.report("规格定位失败", storeName, tsinID, plid, errorMsg)
 }

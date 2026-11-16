@@ -129,16 +129,17 @@ func (s *Server) Handler() http.Handler {
 
 		path := r.URL.Path
 
-		// Account access and stop operations remain available without VIP.
+		// Account access, task status and stop operations remain available without VIP.
 		if !strings.HasPrefix(path, "/api/") ||
 			strings.HasPrefix(path, "/api/account/") || path == "/api/reprice/stop" || path == "/api/reprice/stop_all" || path == "/api/reprice/pause" ||
-			path == "/api/version" || path == "/api/preferences" {
+			path == "/api/reprice/status" || path == "/api/version" || path == "/api/preferences" {
 			s.mux.ServeHTTP(w, r)
 			return
 		}
 
 		if s.accountMgr != nil && (path == "/api/reprice/start" || path == "/api/reprice/start_all" || path == "/api/follow/start") {
 			s.accountMgr.Refresh(r.Context())
+			s.eng.CheckMembership()
 		}
 		// Enforce online membership for business APIs.
 		if s.accountMgr != nil && !s.accountMgr.IsValid() {
@@ -398,9 +399,7 @@ func (s *Server) handleAccountRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state := s.accountMgr.Refresh(r.Context())
-	if !state.Eligible {
-		s.eng.StopAll()
-	}
+	s.eng.CheckMembership()
 	jsonResponse(w, 200, state)
 }
 func (s *Server) handleAccountLogin(w http.ResponseWriter, r *http.Request) {
@@ -420,9 +419,7 @@ func (s *Server) handleAccountLogin(w http.ResponseWriter, r *http.Request) {
 		accountError(w, err)
 		return
 	}
-	if !state.Eligible {
-		s.eng.StopAll()
-	}
+	s.eng.CheckMembership()
 	jsonResponse(w, 200, state)
 }
 func (s *Server) handleAccountRegister(w http.ResponseWriter, r *http.Request) {

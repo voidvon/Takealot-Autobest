@@ -546,7 +546,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
               <CardTitle className="text-sm font-semibold">软件版本与自动更新</CardTitle>
             </div>
             <Badge variant="secondary" className="font-mono text-xs">
-              v{(version || '0.2.0').replace(/^v/, '')}
+              v{(version || '0.2.1').replace(/^v/, '')}
             </Badge>
           </div>
           <CardDescription className="text-xs">
@@ -559,7 +559,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
               <div className="flex items-center gap-2">
                 <span className="font-medium text-foreground">当前运行版本:</span>
                 <span className="font-mono font-semibold text-primary">
-                  v{(version || '0.2.0').replace(/^v/, '')}
+                  v{(version || '0.2.1').replace(/^v/, '')}
                 </span>
                 {updateInfo?.has_update ? (
                   <Badge variant="success" className="text-[10px] px-1.5 py-0 h-4">

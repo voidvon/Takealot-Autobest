@@ -130,7 +130,7 @@ export const Header: React.FC<HeaderProps> = ({
                 </Badge>
               ) : status.is_paused ? (
                 <Badge variant="warning" dot className="text-[10px] h-4.5">
-                  {status.verification_required ? '等待验证' : '已暂停'}
+                  {status.membership_verification_required ? '等待会员验证' : status.verification_required ? '等待验证' : '已暂停'}
                 </Badge>
               ) : (
                 <Badge variant="success" dot className="text-[10px] h-4.5">
@@ -176,6 +176,7 @@ export const Header: React.FC<HeaderProps> = ({
                   variant="outline"
                   size="sm"
                   onClick={onPauseReprice}
+                  disabled={status.is_paused && (status.membership_verification_required || status.verification_required)}
                   loading={loadingAction}
                   className="gap-1.5 text-xs h-8"
                 >

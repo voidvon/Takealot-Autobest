@@ -41,7 +41,7 @@ var distEmbedFS embed.FS
 var staticHTML []byte
 
 var (
-	Version    = "0.2.0"
+	Version    = "0.2.1"
 	BuildMode  = "development" // "development" 或 "production" (构建时通过 ldflags 注入)
 	ProdCMSURL = "https://takealot.0122.vip"
 	DevCMSURL  = "https://takealot.0122.vip"
@@ -157,11 +157,11 @@ func run() error {
 	// 5. Initialize Automation Engine
 	eng := engine.NewEngine(cfgMgr, clientPool, database, accountMgr)
 	defer eng.StopAll()
-	eng.SetReporter(reporter.New(accountMgr, func(err error) {
+	eng.SetReporter(reporter.NewPersistent(accountMgr, func(err error) {
 		eng.Log(err.Error(), "WARN")
-	}))
+	}, filepath.Join(layout.Logs(), "feedback-rate-limit.json")))
 
-	go accountMgr.Run(accountCtx, func() { eng.StopAll() })
+	go accountMgr.Run(accountCtx, eng.CheckMembership)
 
 	// 6. Initialize Automatic Updater Manager
 	updaterMgr := updater.NewManager("voidvon", "Takealot-Autobest", Version, func() {

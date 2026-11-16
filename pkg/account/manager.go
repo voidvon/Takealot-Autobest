@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+const membershipCheckInterval = 24 * time.Hour
+
 type User struct {
 	ID          int64  `json:"id"`
 	Username    string `json:"username"`
@@ -240,7 +242,11 @@ func (m *Manager) GetStatus() Status {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s := m.status
-	if s.Eligible && (time.Since(m.checked) > 45*time.Second || (!m.expiry.IsZero() && !m.expiry.After(time.Now()))) {
+	if s.Eligible && !m.expiry.IsZero() && !m.expiry.After(time.Now()) {
+		s.Eligible = false
+		s.State = "membership_required"
+		s.Message = "VIP 已到期，请联系管理员续期"
+	} else if s.Eligible && time.Since(m.checked) > membershipCheckInterval {
 		s.Eligible = false
 		s.State = "verification_required"
 		s.Message = "需要重新验证会员状态"
@@ -267,13 +273,18 @@ func (m *Manager) Logout(ctx context.Context) error {
 	m.status = Status{State: "signed_out", Message: "已退出登录"}
 	return nil
 }
-func (m *Manager) Run(ctx context.Context, onInvalid func()) {
-	ticker := time.NewTicker(30 * time.Second)
+
+// onCheck runs after every refresh, including recovery from a service outage.
+func (m *Manager) Run(ctx context.Context, onCheck func()) {
+	ticker := time.NewTicker(membershipCheckInterval)
 	defer ticker.Stop()
 	for {
-		state := m.Refresh(ctx)
-		if !state.Eligible && onInvalid != nil {
-			onInvalid()
+		m.Refresh(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		if onCheck != nil {
+			onCheck()
 		}
 		select {
 		case <-ctx.Done():

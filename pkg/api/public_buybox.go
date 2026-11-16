@@ -8,6 +8,29 @@ import (
 	"strings"
 )
 
+// Bound actual requests for one product line in a cycle. Colour-only summaries
+// are included, while cached reads do not consume another request.
+const maxPublicVariantRequests = 96
+
+type publicVariantSelection struct{ colour, size string }
+
+func (s publicVariantSelection) cacheKey(plid string) string {
+	return plid + "?" + url.Values{"colour_variant": {s.colour}, "size": {s.size}}.Encode()
+}
+
+type VariantResolutionError struct {
+	TSINID  string
+	Checked int
+	Limited bool
+}
+
+func (e *VariantResolutionError) Error() string {
+	if e.Limited {
+		return fmt.Sprintf("公开规格查询达到本轮 %d 次请求上限，未定位 TSIN %s", maxPublicVariantRequests, e.TSINID)
+	}
+	return fmt.Sprintf("未找到 TSIN %s 对应的可用独立报价（已检查 %d 个公开规格，可能已无货或前台未展示）", e.TSINID, e.Checked)
+}
+
 // PublicVariantSelector uses the same choices as the public product page.
 // Pack sizes such as 1pc/2pcs are exposed as colour_variant, not necessarily
 // as the colour name supplied by the seller catalogue.
@@ -94,24 +117,99 @@ func (c *Client) ResolvePublicBuyboxByTSIN(plid, tsinID string, initial *PublicB
 	if initial.MatchesTSIN(tsinID) {
 		return initial, nil
 	}
-	type selection struct{ colour, size string }
+	plid = strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(plid)), "PLID")
+	if cache == nil {
+		cache = make(map[string]*PublicBuybox)
+	}
+	// Reuse any exact match already read for another monitored TSIN this cycle.
+	prefix := plid + "?"
+	requests := 0
+	for key, bb := range cache {
+		if strings.HasPrefix(key, prefix) {
+			requests++
+			if bb.MatchesTSIN(tsinID) {
+				return bb, nil
+			}
+		}
+	}
+	remember := func(s publicVariantSelection, bb *PublicBuybox) {
+		if !bb.HasOfferPrices() || AnyToString(bb.TSINID) == "" {
+			return
+		}
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.publicVariants == nil || len(c.publicVariants) >= 4096 {
+			c.publicVariants = make(map[string]publicVariantSelection)
+		}
+		// Keep the selector only. Prices must always be read again next cycle.
+		c.publicVariants[plid+"/"+AnyToString(bb.TSINID)] = s
+	}
+	fetch := func(s publicVariantSelection) (*PublicBuybox, error) {
+		key := s.cacheKey(plid)
+		if bb := cache[key]; bb != nil {
+			return bb, nil
+		}
+		if requests >= maxPublicVariantRequests {
+			return nil, &VariantResolutionError{TSINID: tsinID, Checked: requests, Limited: true}
+		}
+		requests++
+		bb, err := c.GetPublicBuyboxForVariant(plid, s.colour, s.size)
+		if err != nil {
+			return nil, fmt.Errorf("读取公开规格报价失败: %w", err)
+		}
+		cache[key] = bb
+		remember(s, bb)
+		return bb, nil
+	}
+	identityKey := plid + "/" + tsinID
+	c.mu.RLock()
+	known, hasKnown := c.publicVariants[identityKey]
+	c.mu.RUnlock()
+	if hasKnown {
+		bb, err := fetch(known)
+		if err != nil {
+			return nil, err
+		}
+		if bb.MatchesTSIN(tsinID) {
+			return bb, nil
+		}
+		c.mu.Lock()
+		delete(c.publicVariants, identityKey)
+		c.mu.Unlock()
+	}
 	type candidate struct {
-		selection
-		buybox *PublicBuybox
+		selection publicVariantSelection
+		buybox    *PublicBuybox
 	}
 	queue := []candidate{{buybox: initial}}
-	seen := map[selection]bool{{}: true}
-	const maxVariants = 24
+	seen := map[publicVariantSelection]bool{{}: true}
 	checked := 0
 	for len(queue) > 0 {
 		current := queue[0]
 		queue = queue[1:]
+		if current.buybox == nil {
+			var err error
+			current.buybox, err = fetch(current.selection)
+			if err != nil {
+				return nil, err
+			}
+			checked++
+		}
+		if current.buybox.MatchesTSIN(tsinID) {
+			return current.buybox, nil
+		}
+		// Follow one unchosen dimension at a time. A response's default
+		// selected option must not hide the other sizes or colours.
 		for _, selector := range current.buybox.Selectors {
 			if selector.Type != "colour_variant" && selector.Type != "size" {
 				continue
 			}
+			if selector.Type == "colour_variant" && current.selection.colour != "" || selector.Type == "size" && current.selection.size != "" {
+				continue
+			}
+			var nextCandidates []candidate
 			for _, option := range selector.Options {
-				if !option.Enabled || option.Selected {
+				if !option.Enabled {
 					continue
 				}
 				next := current.selection
@@ -127,32 +225,23 @@ func (c *Client) ResolvePublicBuyboxByTSIN(plid, tsinID string, initial *PublicB
 				} else {
 					next.size = value
 				}
+				if colour := AnyToString(option.LinkData.Fields["colour_variant"]); colour != "" {
+					next.colour = colour
+				}
+				if size := AnyToString(option.LinkData.Fields["size"]); size != "" {
+					next.size = size
+				}
 				if seen[next] {
 					continue
 				}
-				if checked >= maxVariants {
-					return nil, fmt.Errorf("公开规格查询达到 %d 次上限，未定位 TSIN %s", maxVariants, tsinID)
-				}
 				seen[next] = true
-				checked++
-				key := plid + "?" + url.Values{"colour_variant": {next.colour}, "size": {next.size}}.Encode()
-				bb := cache[key]
-				if bb == nil {
-					var err error
-					bb, err = c.GetPublicBuyboxForVariant(plid, next.colour, next.size)
-					if err != nil {
-						return nil, fmt.Errorf("读取公开规格报价失败: %w", err)
-					}
-					if cache != nil {
-						cache[key] = bb
-					}
-				}
-				if bb.MatchesTSIN(tsinID) {
-					return bb, nil
-				}
-				queue = append(queue, candidate{selection: next, buybox: bb})
+				nextCandidates = append(nextCandidates, candidate{selection: next})
 			}
+			// Finish selecting this colour's sizes before visiting the next
+			// colour. Do not request every size-only summary from the root.
+			queue = append(nextCandidates, queue...)
+			break
 		}
 	}
-	return nil, fmt.Errorf("未找到 TSIN %s 对应的独立报价（已检查 %d 个公开规格）", tsinID, checked)
+	return nil, &VariantResolutionError{TSINID: tsinID, Checked: checked}
 }

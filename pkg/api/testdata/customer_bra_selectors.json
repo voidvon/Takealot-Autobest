@@ -1,0 +1,1504 @@
+{
+  "initial": {
+    "query": null,
+    "buybox": {
+      "buybox_items_type": "summary",
+      "items": [
+        {
+          "price": 218
+        }
+      ]
+    },
+    "variants": {
+      "selectors": [
+        {
+          "selector_type": "colour_variant",
+          "options": [
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": {
+                "name": "Black",
+                "value": "Black",
+                "type": "colour_variant",
+                "sort_order": null
+              },
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Black"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": {
+                "name": "Nude",
+                "value": "Nude",
+                "type": "colour_variant",
+                "sort_order": null
+              },
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Nude"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selector_type": "size",
+          "options": [
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "34B",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "size": "34B"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "34C",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "size": "34C"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "34D",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "size": "34D"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "34E",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "size": "34E"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "36B",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "size": "36B"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "36C",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "size": "36C"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "36D",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "size": "36D"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "36E",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "size": "36E"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "38B",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "size": "38B"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "38C",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "size": "38C"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "38D",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "size": "38D"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "38E",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "size": "38E"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "40B",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "size": "40B"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "40C",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "size": "40C"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "40E",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "size": "40E"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "40D",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "size": "40D"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "42B",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "size": "42B"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "42C",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "size": "42C"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "42D",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "size": "42D"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "42E",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "size": "42E"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "Black": {
+    "query": null,
+    "buybox": {
+      "buybox_items_type": "summary",
+      "items": [
+        {
+          "price": 218
+        }
+      ]
+    },
+    "variants": {
+      "selectors": [
+        {
+          "selector_type": "colour_variant",
+          "options": [
+            {
+              "is_enabled": true,
+              "is_selected": true,
+              "value": {
+                "name": "Black",
+                "value": "Black",
+                "type": "colour_variant",
+                "sort_order": null
+              },
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Black"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": {
+                "name": "Nude",
+                "value": "Nude",
+                "type": "colour_variant",
+                "sort_order": null
+              },
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Nude"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selector_type": "size",
+          "options": [
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "34B",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Black",
+                  "size": "34B"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "34C",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Black",
+                  "size": "34C"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "34D",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Black",
+                  "size": "34D"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "34E",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Black",
+                  "size": "34E"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "36B",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Black",
+                  "size": "36B"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "36C",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Black",
+                  "size": "36C"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "36D",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Black",
+                  "size": "36D"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "36E",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Black",
+                  "size": "36E"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "38B",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Black",
+                  "size": "38B"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "38C",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Black",
+                  "size": "38C"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "38D",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Black",
+                  "size": "38D"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "38E",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Black",
+                  "size": "38E"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "40B",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Black",
+                  "size": "40B"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "40C",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Black",
+                  "size": "40C"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "40E",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Black",
+                  "size": "40E"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "40D",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Black",
+                  "size": "40D"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "42B",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Black",
+                  "size": "42B"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "42C",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Black",
+                  "size": "42C"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "42D",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Black",
+                  "size": "42D"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "42E",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Black",
+                  "size": "42E"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "Nude": {
+    "query": null,
+    "buybox": {
+      "buybox_items_type": "summary",
+      "items": [
+        {
+          "price": 354
+        }
+      ]
+    },
+    "variants": {
+      "selectors": [
+        {
+          "selector_type": "colour_variant",
+          "options": [
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": {
+                "name": "Black",
+                "value": "Black",
+                "type": "colour_variant",
+                "sort_order": null
+              },
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Black"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": true,
+              "value": {
+                "name": "Nude",
+                "value": "Nude",
+                "type": "colour_variant",
+                "sort_order": null
+              },
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Nude"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "selector_type": "size",
+          "options": [
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "34B",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Nude",
+                  "size": "34B"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "34C",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Nude",
+                  "size": "34C"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "34D",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Nude",
+                  "size": "34D"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "34E",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Nude",
+                  "size": "34E"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "36B",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Nude",
+                  "size": "36B"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "36C",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Nude",
+                  "size": "36C"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "36D",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Nude",
+                  "size": "36D"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "36E",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Nude",
+                  "size": "36E"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "38B",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Nude",
+                  "size": "38B"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "38C",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Nude",
+                  "size": "38C"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "38D",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Nude",
+                  "size": "38D"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "38E",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Nude",
+                  "size": "38E"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "40B",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Nude",
+                  "size": "40B"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "40C",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Nude",
+                  "size": "40C"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "40E",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Nude",
+                  "size": "40E"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "40D",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Nude",
+                  "size": "40D"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "42B",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Nude",
+                  "size": "42B"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "42C",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Nude",
+                  "size": "42C"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "42D",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Nude",
+                  "size": "42D"
+                }
+              }
+            },
+            {
+              "is_enabled": true,
+              "is_selected": false,
+              "value": "42E",
+              "link_data": {
+                "path": "/rest/{api_version}/product-details/{plid}?platform={platform}&colour_variant={colour_variant}&size={size}",
+                "fields": {
+                  "api_version": "v-1-16-0",
+                  "plid": "PLID93415081",
+                  "platform": "desktop",
+                  "colour_variant": "Nude",
+                  "size": "42E"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "Black/34B": {
+    "query": {
+      "platform": "desktop",
+      "colour_variant": "Black",
+      "size": "34B"
+    },
+    "buybox": {
+      "tsin": 93975211,
+      "buybox_items_type": "multi",
+      "items": [
+        {
+          "price": 850,
+          "sponsored_ads_seller_id": "M29839593"
+        },
+        {
+          "price": 354,
+          "sponsored_ads_seller_id": "M29898356"
+        }
+      ]
+    }
+  },
+  "Black/34C": {
+    "query": {
+      "platform": "desktop",
+      "colour_variant": "Black",
+      "size": "34C"
+    },
+    "buybox": {
+      "tsin": 93975212,
+      "buybox_items_type": "multi",
+      "items": [
+        {
+          "price": 850,
+          "sponsored_ads_seller_id": "M29839593"
+        },
+        {
+          "price": 354,
+          "sponsored_ads_seller_id": "M29898356"
+        }
+      ]
+    }
+  },
+  "Black/34D": {
+    "query": {
+      "platform": "desktop",
+      "colour_variant": "Black",
+      "size": "34D"
+    },
+    "buybox": {
+      "tsin": 93975213,
+      "buybox_items_type": "multi",
+      "items": [
+        {
+          "price": 850,
+          "sponsored_ads_seller_id": "M29839593"
+        },
+        {
+          "price": 354,
+          "sponsored_ads_seller_id": "M29898356"
+        }
+      ]
+    }
+  },
+  "Black/34E": {
+    "query": {
+      "platform": "desktop",
+      "colour_variant": "Black",
+      "size": "34E"
+    },
+    "buybox": {
+      "tsin": 93975214,
+      "buybox_items_type": "single",
+      "items": [
+        {
+          "price": 218,
+          "sponsored_ads_seller_id": "M29895882"
+        }
+      ]
+    }
+  },
+  "Black/36B": {
+    "query": {
+      "platform": "desktop",
+      "colour_variant": "Black",
+      "size": "36B"
+    },
+    "buybox": {
+      "tsin": 93975215,
+      "buybox_items_type": "multi",
+      "items": [
+        {
+          "price": 850,
+          "sponsored_ads_seller_id": "M29839593"
+        },
+        {
+          "price": 354,
+          "sponsored_ads_seller_id": "M29898356"
+        }
+      ]
+    }
+  },
+  "Black/36C": {
+    "query": {
+      "platform": "desktop",
+      "colour_variant": "Black",
+      "size": "36C"
+    },
+    "buybox": {
+      "tsin": 93975216,
+      "buybox_items_type": "single",
+      "items": [
+        {
+          "price": 343,
+          "sponsored_ads_seller_id": "M29890822"
+        }
+      ]
+    }
+  },
+  "Black/36D": {
+    "query": {
+      "platform": "desktop",
+      "colour_variant": "Black",
+      "size": "36D"
+    },
+    "buybox": {
+      "tsin": 93975217,
+      "buybox_items_type": "multi",
+      "items": [
+        {
+          "price": 850,
+          "sponsored_ads_seller_id": "M29839593"
+        },
+        {
+          "price": 354,
+          "sponsored_ads_seller_id": "M29898356"
+        }
+      ]
+    }
+  },
+  "Black/36E": {
+    "query": {
+      "platform": "desktop",
+      "colour_variant": "Black",
+      "size": "36E"
+    },
+    "buybox": {
+      "tsin": 93975218,
+      "buybox_items_type": "multi",
+      "items": [
+        {
+          "price": 850,
+          "sponsored_ads_seller_id": "M29839593"
+        },
+        {
+          "price": 354,
+          "sponsored_ads_seller_id": "M29898356"
+        }
+      ]
+    }
+  },
+  "Black/38B": {
+    "query": {
+      "platform": "desktop",
+      "colour_variant": "Black",
+      "size": "38B"
+    },
+    "buybox": {
+      "tsin": 93975219,
+      "buybox_items_type": "multi",
+      "items": [
+        {
+          "price": 850,
+          "sponsored_ads_seller_id": "M29839593"
+        },
+        {
+          "price": 354,
+          "sponsored_ads_seller_id": "M29898356"
+        }
+      ]
+    }
+  },
+  "Black/38C": {
+    "query": {
+      "platform": "desktop",
+      "colour_variant": "Black",
+      "size": "38C"
+    },
+    "buybox": {
+      "tsin": 93975220,
+      "buybox_items_type": "multi",
+      "items": [
+        {
+          "price": 850,
+          "sponsored_ads_seller_id": "M29839593"
+        },
+        {
+          "price": 354,
+          "sponsored_ads_seller_id": "M29898356"
+        }
+      ]
+    }
+  },
+  "Black/38D": {
+    "query": {
+      "platform": "desktop",
+      "colour_variant": "Black",
+      "size": "38D"
+    },
+    "buybox": {
+      "tsin": 93975221,
+      "buybox_items_type": "multi",
+      "items": [
+        {
+          "price": 850,
+          "sponsored_ads_seller_id": "M29839593"
+        },
+        {
+          "price": 355,
+          "sponsored_ads_seller_id": "M29898356"
+        }
+      ]
+    }
+  },
+  "Black/38E": {
+    "query": {
+      "platform": "desktop",
+      "colour_variant": "Black",
+      "size": "38E"
+    },
+    "buybox": {
+      "tsin": 93975222,
+      "buybox_items_type": "multi",
+      "items": [
+        {
+          "price": 850,
+          "sponsored_ads_seller_id": "M29839593"
+        },
+        {
+          "price": 354,
+          "sponsored_ads_seller_id": "M29898356"
+        }
+      ]
+    }
+  },
+  "Black/40B": {
+    "query": {
+      "platform": "desktop",
+      "colour_variant": "Black",
+      "size": "40B"
+    },
+    "buybox": {
+      "tsin": 93975223,
+      "buybox_items_type": "multi",
+      "items": [
+        {
+          "price": 850,
+          "sponsored_ads_seller_id": "M29839593"
+        },
+        {
+          "price": 354,
+          "sponsored_ads_seller_id": "M29898356"
+        }
+      ]
+    }
+  },
+  "Black/40C": {
+    "query": {
+      "platform": "desktop",
+      "colour_variant": "Black",
+      "size": "40C"
+    },
+    "buybox": {
+      "tsin": 93975224,
+      "buybox_items_type": "multi",
+      "items": [
+        {
+          "price": 850,
+          "sponsored_ads_seller_id": "M29839593"
+        },
+        {
+          "price": 354,
+          "sponsored_ads_seller_id": "M29898356"
+        }
+      ]
+    }
+  },
+  "Black/40E": {
+    "query": {
+      "platform": "desktop",
+      "colour_variant": "Black",
+      "size": "40E"
+    },
+    "buybox": {
+      "tsin": 93975226,
+      "buybox_items_type": "multi",
+      "items": [
+        {
+          "price": 850,
+          "sponsored_ads_seller_id": "M29839593"
+        },
+        {
+          "price": 357,
+          "sponsored_ads_seller_id": "M29898356"
+        }
+      ]
+    }
+  },
+  "Black/40D": {
+    "query": {
+      "platform": "desktop",
+      "colour_variant": "Black",
+      "size": "40D"
+    },
+    "buybox": {
+      "tsin": 93975225,
+      "buybox_items_type": "multi",
+      "items": [
+        {
+          "price": 850,
+          "sponsored_ads_seller_id": "M29839593"
+        },
+        {
+          "price": 357,
+          "sponsored_ads_seller_id": "M29898356"
+        }
+      ]
+    }
+  },
+  "Black/42B": {
+    "query": {
+      "platform": "desktop",
+      "colour_variant": "Black",
+      "size": "42B"
+    },
+    "buybox": {
+      "tsin": 93975227,
+      "buybox_items_type": "multi",
+      "items": [
+        {
+          "price": 850,
+          "sponsored_ads_seller_id": "M29839593"
+        },
+        {
+          "price": 354,
+          "sponsored_ads_seller_id": "M29898356"
+        }
+      ]
+    }
+  },
+  "Black/42C": {
+    "query": {
+      "platform": "desktop",
+      "colour_variant": "Black",
+      "size": "42C"
+    },
+    "buybox": {
+      "tsin": 93975228,
+      "buybox_items_type": "multi",
+      "items": [
+        {
+          "price": 850,
+          "sponsored_ads_seller_id": "M29839593"
+        },
+        {
+          "price": 354,
+          "sponsored_ads_seller_id": "M29898356"
+        }
+      ]
+    }
+  },
+  "Black/42D": {
+    "query": {
+      "platform": "desktop",
+      "colour_variant": "Black",
+      "size": "42D"
+    },
+    "buybox": {
+      "tsin": 93975229,
+      "buybox_items_type": "multi",
+      "items": [
+        {
+          "price": 850,
+          "sponsored_ads_seller_id": "M29839593"
+        },
+        {
+          "price": 354,
+          "sponsored_ads_seller_id": "M29898356"
+        }
+      ]
+    }
+  },
+  "Black/42E": {
+    "query": {
+      "platform": "desktop",
+      "colour_variant": "Black",
+      "size": "42E"
+    },
+    "buybox": {
+      "tsin": 93975230,
+      "buybox_items_type": "multi",
+      "items": [
+        {
+          "price": 850,
+          "sponsored_ads_seller_id": "M29839593"
+        },
+        {
+          "price": 256,
+          "sponsored_ads_seller_id": "M29903680"
+        }
+      ]
+    }
+  },
+  "Nude/34B": {
+    "query": {
+      "platform": "desktop",
+      "colour_variant": "Nude",
+      "size": "34B"
+    },
+    "buybox": {
+      "tsin": 93975231,
+      "buybox_items_type": "multi",
+      "items": [
+        {
+          "price": 850,
+          "sponsored_ads_seller_id": "M29839593"
+        },
+        {
+          "price": 354,
+          "sponsored_ads_seller_id": "M29898356"
+        }
+      ]
+    }
+  }
+}

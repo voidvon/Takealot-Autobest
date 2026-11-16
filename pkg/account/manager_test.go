@@ -146,6 +146,12 @@ func TestOnlineAccountLifecycle(t *testing.T) {
 	m.mu.Lock()
 	m.checked = time.Now().Add(-time.Minute)
 	m.mu.Unlock()
+	if !m.IsValid() {
+		t.Fatal("valid membership expired within the daily verification interval")
+	}
+	m.mu.Lock()
+	m.checked = time.Now().Add(-25 * time.Hour)
+	m.mu.Unlock()
 	if m.IsValid() {
 		t.Fatal("stale state allowed")
 	}

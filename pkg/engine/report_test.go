@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,13 +12,15 @@ import (
 	"time"
 
 	"takealot/pkg/account"
+	"takealot/pkg/api"
 	"takealot/pkg/reporter"
 )
 
-type mockReporter struct{ cfCalls, fetchCalls int }
+type mockReporter struct{ cfCalls, fetchCalls, variantCalls int }
 
-func (m *mockReporter) ReportCloudflareBlock(_, _, _, _ string) { m.cfCalls++ }
-func (m *mockReporter) ReportPriceFetchError(_, _, _, _ string) { m.fetchCalls++ }
+func (m *mockReporter) ReportCloudflareBlock(_, _, _, _ string)        { m.cfCalls++ }
+func (m *mockReporter) ReportPriceFetchError(_, _, _, _ string)        { m.fetchCalls++ }
+func (m *mockReporter) ReportVariantResolutionError(_, _, _, _ string) { m.variantCalls++ }
 
 func TestEngineReporterTrigger(t *testing.T) {
 	for _, tc := range []struct {
@@ -29,6 +32,8 @@ func TestEngineReporterTrigger(t *testing.T) {
 		{"前台报价响应不是有效 JSON（可能返回了验证页面）", true},
 		{"HTTP 500: internal error", false},
 		{"前台报价字段格式无法解析: unexpected field type", false},
+		{"公开规格查询达到 24 次上限，未定位 TSIN 92040398", false},
+		{`Get "https://api.takealot.com/product-details/PLID1040398": EOF`, false},
 	} {
 		t.Run(tc.message, func(t *testing.T) {
 			mock := &mockReporter{}
@@ -39,6 +44,16 @@ func TestEngineReporterTrigger(t *testing.T) {
 				t.Fatalf("incorrect routing: %+v", mock)
 			}
 		})
+	}
+}
+
+func TestVariantResolutionErrorHasItsOwnFeedbackCategory(t *testing.T) {
+	mock := &mockReporter{}
+	eng := NewEngine(nil, nil, nil, nil)
+	eng.SetReporter(mock)
+	eng.reportPriceFetchFailure("shop", "92040398", "123", fmt.Errorf("resolve: %w", &api.VariantResolutionError{TSINID: "92040398", Limited: true}))
+	if mock.variantCalls != 1 || mock.cfCalls != 0 || mock.fetchCalls != 0 {
+		t.Fatalf("resolution failure misclassified: %+v", mock)
 	}
 }
 

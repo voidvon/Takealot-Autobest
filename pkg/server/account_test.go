@@ -4,12 +4,97 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
-	"takealot/pkg/account"
-	"takealot/pkg/engine"
 	"testing"
+
+	"takealot/pkg/account"
+	"takealot/pkg/api"
+	"takealot/pkg/db"
+	"takealot/pkg/engine"
 )
+
+func TestAccountRefreshOutageWaitsAndRecoveryDoesNotRestartStoppedTasks(t *testing.T) {
+	var failure atomic.Int32
+	cms := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if failure.Load() != 0 {
+			w.WriteHeader(int(failure.Load()))
+			_, _ = w.Write([]byte(`{"error":{"code":"test_failure"}}`))
+			return
+		}
+		body := `{"data":{"id":1,"username":"alice"}}`
+		switch r.URL.Path {
+		case "/api/v1/auth/token":
+			body = `{"data":{"user":{"id":1,"username":"alice"},"access_token":"test-token","token_type":"Bearer","expires_in":3600}}`
+		case "/api/v1/me/memberships":
+			body = `{"data":[{"slug":"vip","status":"active"}]}`
+		}
+		_, _ = w.Write([]byte(body))
+	}))
+	defer cms.Close()
+	mgr, err := account.New(cms.URL, "vip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, err := db.New(filepath.Join(t.TempDir(), "account.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	store, err := database.EnsureDefaultStore("fake-key", 1, 1, 5, 1, 1000, 120)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := api.NewClientPool()
+	eng := engine.NewEngine(nil, pool, database, mgr)
+	defer eng.StopAll()
+	srv := NewServer(nil, pool, eng, database, mgr, nil, nil, nil, "test")
+	call := func(method, path, body string, want int) *httptest.ResponseRecorder {
+		t.Helper()
+		r := httptest.NewRequest(method, "http://127.0.0.1:8000"+path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("X-Store-Id", store.ID)
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, r)
+		if w.Code != want {
+			t.Fatalf("%s: got %d, want %d: %s", path, w.Code, want, w.Body.String())
+		}
+		return w
+	}
+	check := func(running, pending bool) {
+		t.Helper()
+		w := call("GET", "/api/reprice/status", "", 200)
+		var status engine.Status
+		if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil || status.IsRunning != running || status.IsPaused != pending || status.MembershipVerificationRequired != pending {
+			t.Fatalf("unexpected task status: %s (%v)", w.Body.String(), err)
+		}
+	}
+	credentials := `{"identifier":"alice","password":"password123"}`
+	call("POST", "/api/account/login", credentials, 200)
+	call("POST", "/api/reprice/start", "{}", 200)
+	check(true, false)
+	failure.Store(503)
+	call("POST", "/api/account/refresh", "{}", 200)
+	check(true, true)
+	call("GET", "/api/stores", "", 403) // Business APIs still fail closed.
+	failure.Store(0)
+	call("POST", "/api/account/refresh", "{}", 200)
+	check(true, false)
+	failure.Store(503)
+	call("POST", "/api/account/refresh", "{}", 200)
+	call("POST", "/api/reprice/stop", "{}", 200)
+	failure.Store(0)
+	call("POST", "/api/account/refresh", "{}", 200)
+	check(false, false)
+	call("POST", "/api/reprice/start", "{}", 200)
+	failure.Store(401)
+	call("POST", "/api/account/refresh", "{}", 200)
+	check(false, false)
+	failure.Store(0)
+	call("POST", "/api/account/login", credentials, 200)
+	check(false, false)
+}
 
 func TestLocalAccountAPIKeepsBearerCredentialInBackend(t *testing.T) {
 	const token = "server-only-access-token"

@@ -37,7 +37,7 @@ const getTabFromLocation = (): TabId => {
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTabState] = useState<TabId>(getTabFromLocation)
-  const [version, setVersion] = useState('0.2.0')
+  const [version, setVersion] = useState('0.2.1')
   const [loadingAction, setLoadingAction] = useState(false)
 
   // Multi-Store State

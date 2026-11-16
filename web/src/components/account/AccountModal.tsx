@@ -45,7 +45,7 @@ export function AccountModal({
   onOpenChange,
   status,
   onAuthenticated,
-  version = '0.2.0',
+  version = '0.2.1',
   updateInfo,
   onOpenUpdate,
   onCheckUpdate,
@@ -646,7 +646,7 @@ export function AccountModal({
                   <div className="flex items-center gap-2">
                     <h3 className="font-bold text-sm text-foreground">Takealot 掌柜</h3>
                     <Badge variant="secondary" className="font-mono text-[10px] px-1.5 h-4.5">
-                      v{(version || '0.2.0').replace(/^v/, '')}
+                      v{(version || '0.2.1').replace(/^v/, '')}
                     </Badge>
                   </div>
                   <p className="text-[11px] text-muted-foreground mt-0.5">
@@ -674,7 +674,7 @@ export function AccountModal({
                     </div>
 
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <span>当前运行版本: <strong className="font-mono text-foreground font-semibold">v{(version || '0.2.0').replace(/^v/, '')}</strong></span>
+                      <span>当前运行版本: <strong className="font-mono text-foreground font-semibold">v{(version || '0.2.1').replace(/^v/, '')}</strong></span>
                       {updateInfo?.has_update && (
                         <span>• 最新: <strong className="font-mono text-emerald-600 dark:text-emerald-400 font-semibold">v{updateInfo.version.replace(/^v/, '')}</strong></span>
                       )}

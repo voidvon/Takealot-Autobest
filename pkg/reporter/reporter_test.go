@@ -3,6 +3,7 @@ package reporter
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -39,12 +40,13 @@ func TestReportsSubmitFeedbackAndRateLimitPerStoreAndType(t *testing.T) {
 			t.Errorf("title missing %s: %s", want, call.title)
 		}
 	}
-	for _, want := range []string{"HTTP 403", "https://api.takealot.com/rest/v-1-16-0/product-details/PLID123", "本轮已暂停该商品调价"} {
+	for _, want := range []string{"HTTP 403", "https://api.takealot.com/rest/v-1-16-0/product-details/PLID123", "底价保护仍独立执行"} {
 		if !strings.Contains(call.content, want) {
 			t.Errorf("content missing %s", want)
 		}
 	}
 	r.ReportCloudflareBlock("店铺A", "1001", "PLID123", "duplicate")
+	r.ReportCloudflareBlock("店铺A", "1002", "123", "duplicate other variant")
 	// 同一商品在其他店铺或另一种异常类别应单独反馈。
 	r.ReportCloudflareBlock("店铺B", "1001", "PLID123", "other store")
 	r.ReportPriceFetchError("店铺A", "1001", "PLID123", "HTTP 500")
@@ -61,9 +63,33 @@ func TestRateLimitExpires(t *testing.T) {
 	if r.shouldRateLimit("product") || !r.shouldRateLimit("product") {
 		t.Fatal("duplicate not suppressed")
 	}
-	r.lastReport["product"] = time.Now().Add(-16 * time.Minute)
+	r.lastReport["product"] = time.Now().Add(-25 * time.Hour)
 	if r.shouldRateLimit("product") {
 		t.Fatal("expired window suppressed report")
+	}
+}
+
+func TestReportCooldownSurvivesRestartAndGroupsVariants(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "feedback-rate-limit.json")
+	s := &feedbackStub{calls: make(chan feedbackCall, 10)}
+	r := NewPersistent(s, nil, path)
+	r.ReportVariantResolutionError("shop", "1", "PLID123", "first variant")
+	if call := receiveCall(t, s.calls); !strings.Contains(call.title, "规格定位失败") {
+		t.Fatalf("missing diagnostic category: %s", call.title)
+	}
+	r = NewPersistent(s, nil, path)
+	r.ReportVariantResolutionError("shop", "2", "123", "suppressed after restart")
+	r.ReportVariantResolutionError("other shop", "2", "123", "other shop")
+	r.ReportVariantResolutionError("shop", "2", "456", "other product")
+	for i := 0; i < 2; i++ {
+		if call := receiveCall(t, s.calls); strings.Contains(call.content, "suppressed") {
+			t.Fatal("restart or different variant bypassed the product cooldown")
+		}
+	}
+	select {
+	case call := <-s.calls:
+		t.Fatalf("unexpected duplicate report: %+v", call)
+	default:
 	}
 }
 

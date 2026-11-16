@@ -1,11 +1,48 @@
 package api
 
 import (
+	"context"
 	"os"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
+
+// Opt-in read-only reproduction of variants that repeatedly failed in member
+// feedback. Every request is an unauthenticated GET to the public API.
+func TestLiveReportedVariantResolution(t *testing.T) {
+	if os.Getenv("TAKEALOT_LIVE_CHECK") != "1" {
+		t.Skip("live check disabled")
+	}
+	for _, tc := range []struct{ plid, tsin string }{
+		{"93415081", "93975231"},
+		{"94058532", "94733552"},
+	} {
+		t.Run(tc.plid, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			c := NewClient("").WithContext(ctx)
+			initial, err := c.GetPublicBuybox(tc.plid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cache := make(map[string]*PublicBuybox)
+			bb, err := c.ResolvePublicBuyboxByTSIN(tc.plid, tc.tsin, initial, cache)
+			if err != nil || !bb.MatchesTSIN(tc.tsin) {
+				t.Fatalf("exact public variant failed: %+v, %v", bb, err)
+			}
+			selection := c.publicVariants[tc.plid+"/"+tc.tsin]
+			t.Logf("TSIN=%s colour=%s size=%s displayed_offers=%d discovery_requests=%d", tc.tsin, selection.colour, selection.size, len(bb.Items), len(cache))
+			// A new cycle reuses the selector, but fetches a fresh response.
+			nextCycle := make(map[string]*PublicBuybox)
+			bb, err = c.ResolvePublicBuyboxByTSIN(tc.plid, tc.tsin, initial, nextCycle)
+			if err != nil || !bb.MatchesTSIN(tc.tsin) || len(nextCycle) != 1 {
+				t.Fatalf("fresh single-request recheck failed: %+v, %v, requests=%d", bb, err, len(nextCycle))
+			}
+		})
+	}
+}
 
 // Read-only check of public TSIN resolution; never accesses a seller account or
 // submits a price change. Assertions deliberately do not depend on live prices.

@@ -37,6 +37,7 @@ type clientState struct {
 	httpClient       *http.Client
 	logger           func(message, level string)
 	requestTransport RequestTransport
+	publicVariants   map[string]publicVariantSelection
 
 	rateMu      sync.Mutex
 	lastReqTime time.Time

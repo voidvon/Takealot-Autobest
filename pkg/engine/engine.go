@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"takealot/pkg/account"
 	"takealot/pkg/api"
 	"takealot/pkg/config"
 	"takealot/pkg/db"
@@ -25,30 +27,32 @@ type LogEntry struct {
 }
 
 type Status struct {
-	StoreID              string  `json:"store_id"`
-	StoreName            string  `json:"store_name"`
-	IsRunning            bool    `json:"is_running"`
-	IsPaused             bool    `json:"is_paused"`
-	VerificationRequired bool    `json:"verification_required"`
-	FollowRunning        bool    `json:"follow_running"`
-	LastRunTime          *string `json:"last_run_time"`
-	NextRunTime          *string `json:"next_run_time"`
-	CountdownSeconds     int     `json:"countdown_seconds"`
-	TotalChecked         int     `json:"total_checked"`
-	TotalRepriced        int     `json:"total_repriced"`
-	TotalFollowed        int     `json:"total_followed"`
+	StoreID                        string  `json:"store_id"`
+	StoreName                      string  `json:"store_name"`
+	IsRunning                      bool    `json:"is_running"`
+	IsPaused                       bool    `json:"is_paused"`
+	VerificationRequired           bool    `json:"verification_required"`
+	MembershipVerificationRequired bool    `json:"membership_verification_required"`
+	FollowRunning                  bool    `json:"follow_running"`
+	LastRunTime                    *string `json:"last_run_time"`
+	NextRunTime                    *string `json:"next_run_time"`
+	CountdownSeconds               int     `json:"countdown_seconds"`
+	TotalChecked                   int     `json:"total_checked"`
+	TotalRepriced                  int     `json:"total_repriced"`
+	TotalFollowed                  int     `json:"total_followed"`
 }
 
 type StoreWorker struct {
-	storeID              string
-	mu                   sync.RWMutex
-	isRunning            bool
-	isPaused             bool
-	followRunning        bool
-	cancelReprice        context.CancelFunc
-	cancelCycle          context.CancelFunc
-	verificationRequired bool
-	wake                 chan struct{}
+	storeID                        string
+	mu                             sync.RWMutex
+	isRunning                      bool
+	isPaused                       bool
+	followRunning                  bool
+	cancelReprice                  context.CancelFunc
+	cancelCycle                    context.CancelFunc
+	verificationRequired           bool
+	membershipVerificationRequired bool
+	wake                           chan struct{}
 
 	lastRunTime   time.Time
 	nextRunTime   time.Time
@@ -105,12 +109,19 @@ func (e *Engine) SetReporter(r reporter.Reporter) {
 	e.reporter = r
 }
 
+var httpForbiddenError = regexp.MustCompile(`\bHTTP\s+403\b`)
+
 func (e *Engine) reportPriceFetchFailure(storeName, tsinID, plid string, err error) {
 	if e.reporter == nil || err == nil {
 		return
 	}
 	errStr := err.Error()
-	if strings.Contains(errStr, "Cloudflare") || strings.Contains(errStr, "403") || strings.Contains(errStr, "验证页面") {
+	var resolution *api.VariantResolutionError
+	var blocked *api.AccessBlockedError
+	var verification *api.VerificationRequiredError
+	if errors.As(err, &resolution) {
+		e.reporter.ReportVariantResolutionError(storeName, tsinID, plid, errStr)
+	} else if errors.As(err, &blocked) || errors.As(err, &verification) || strings.Contains(errStr, "Cloudflare") || httpForbiddenError.MatchString(errStr) || strings.Contains(errStr, "验证页面") {
 		e.reporter.ReportCloudflareBlock(storeName, tsinID, plid, errStr)
 	} else {
 		e.reporter.ReportPriceFetchError(storeName, tsinID, plid, errStr)
@@ -240,6 +251,9 @@ func (e *Engine) PauseReprice(storeID string) (bool, string) {
 	if w.verificationRequired {
 		return false, "请先在访问会话中完成验证并检查连接"
 	}
+	if w.membershipVerificationRequired {
+		return false, "正在等待会员服务验证，验证成功后将自动继续巡检"
+	}
 	w.isPaused = !w.isPaused
 	statusStr := "已暂停"
 	if !w.isPaused {
@@ -283,12 +297,69 @@ func (e *Engine) StopReprice(storeID string) (bool, string) {
 	}
 	w.isRunning = false
 	w.isPaused = false
+	w.membershipVerificationRequired = false
 	if w.cancelReprice != nil {
 		w.cancelReprice()
 	}
 	w.nextRunTime = time.Time{}
 	e.Log(fmt.Sprintf("⏹️ 店铺 [%s] 监控已停止", w.storeName), "WARN", w.storeID, w.storeName)
 	return true, "已停止监控"
+}
+
+// CheckMembership cancels obsolete calculations while online verification is
+// unavailable. Only already-running tasks can resume after a successful check.
+func (e *Engine) CheckMembership() {
+	e.workerMu.RLock()
+	workers := make([]*StoreWorker, 0, len(e.workers))
+	for _, w := range e.workers {
+		workers = append(workers, w)
+	}
+	e.workerMu.RUnlock()
+	for _, w := range workers {
+		e.checkWorkerMembership(w)
+	}
+}
+
+func (e *Engine) checkWorkerMembership(w *StoreWorker) bool {
+	state := account.Status{Eligible: true}
+	if checker, ok := e.membershipChecker.(interface{ GetStatus() account.Status }); ok {
+		// Read eligibility and failure reason in one snapshot.
+		state = checker.GetStatus()
+	} else if e.membershipChecker != nil {
+		state.Eligible = e.membershipChecker.IsValid()
+	}
+	pending := !state.Eligible && (state.State == "unavailable" || state.State == "verification_required")
+	w.mu.Lock()
+	if !w.isRunning {
+		w.mu.Unlock()
+		return false
+	}
+	if !state.Eligible && !pending {
+		name := w.storeName
+		w.mu.Unlock()
+		e.Log(fmt.Sprintf("⚠️ 店铺 [%s] 会员资格无效，已自动停止调价任务: %s", name, state.Message), "ERROR", w.storeID, name)
+		e.StopReprice(w.storeID)
+		return false
+	}
+	changed := w.membershipVerificationRequired != pending
+	w.membershipVerificationRequired = pending
+	if changed {
+		w.nextRunTime = time.Time{}
+		if pending && w.cancelCycle != nil {
+			w.cancelCycle()
+		}
+		select {
+		case w.wake <- struct{}{}:
+		default:
+		}
+		if pending {
+			e.Log(fmt.Sprintf("⚠️ 店铺 [%s] 等待会员服务验证，暂停调价，验证成功后自动继续: %s", w.storeName, state.Message), "WARN", w.storeID, w.storeName)
+		} else {
+			e.Log(fmt.Sprintf("✅ 店铺 [%s] 会员验证已恢复，巡检可自动继续（保留手动暂停状态）", w.storeName), "INFO", w.storeID, w.storeName)
+		}
+	}
+	w.mu.Unlock()
+	return true
 }
 
 func (e *Engine) StartAll() []string {
@@ -370,6 +441,8 @@ func (e *Engine) GetAllStatus() Status {
 	anyRunning := false
 	allPaused := true
 	anyChecking := false
+	anyVerificationRequired := false
+	anyMembershipVerificationRequired := false
 	minCountdown := 999999
 	var latestLast *time.Time
 	var earliestNext *time.Time
@@ -384,7 +457,9 @@ func (e *Engine) GetAllStatus() Status {
 
 		if w.isRunning {
 			anyRunning = true
-			if !w.isPaused && !w.verificationRequired {
+			anyVerificationRequired = anyVerificationRequired || w.verificationRequired
+			anyMembershipVerificationRequired = anyMembershipVerificationRequired || w.membershipVerificationRequired
+			if !w.isPaused && !w.verificationRequired && !w.membershipVerificationRequired {
 				allPaused = false
 				if w.nextRunTime.IsZero() {
 					anyChecking = true
@@ -431,16 +506,18 @@ func (e *Engine) GetAllStatus() Status {
 	}
 
 	return Status{
-		StoreID:          "all",
-		StoreName:        "全部店铺",
-		IsRunning:        anyRunning,
-		IsPaused:         allPaused,
-		CountdownSeconds: minCountdown,
-		TotalChecked:     totalChecked,
-		TotalRepriced:    totalRepriced,
-		TotalFollowed:    totalFollowed,
-		LastRunTime:      lastStr,
-		NextRunTime:      nextStr,
+		StoreID:                        "all",
+		StoreName:                      "全部店铺",
+		IsRunning:                      anyRunning,
+		IsPaused:                       allPaused,
+		VerificationRequired:           anyVerificationRequired,
+		MembershipVerificationRequired: anyMembershipVerificationRequired,
+		CountdownSeconds:               minCountdown,
+		TotalChecked:                   totalChecked,
+		TotalRepriced:                  totalRepriced,
+		TotalFollowed:                  totalFollowed,
+		LastRunTime:                    lastStr,
+		NextRunTime:                    nextStr,
 	}
 }
 
@@ -476,18 +553,19 @@ func (e *Engine) GetStatus(storeID string) Status {
 	}
 
 	return Status{
-		StoreID:              w.storeID,
-		StoreName:            name,
-		IsRunning:            w.isRunning,
-		IsPaused:             w.isPaused || w.verificationRequired,
-		VerificationRequired: w.verificationRequired,
-		FollowRunning:        w.followRunning,
-		LastRunTime:          lastStr,
-		NextRunTime:          nextStr,
-		CountdownSeconds:     countdown,
-		TotalChecked:         w.totalChecked,
-		TotalRepriced:        w.totalRepriced,
-		TotalFollowed:        w.totalFollowed,
+		StoreID:                        w.storeID,
+		StoreName:                      name,
+		IsRunning:                      w.isRunning,
+		IsPaused:                       w.isPaused || w.verificationRequired || w.membershipVerificationRequired,
+		VerificationRequired:           w.verificationRequired,
+		MembershipVerificationRequired: w.membershipVerificationRequired,
+		FollowRunning:                  w.followRunning,
+		LastRunTime:                    lastStr,
+		NextRunTime:                    nextStr,
+		CountdownSeconds:               countdown,
+		TotalChecked:                   w.totalChecked,
+		TotalRepriced:                  w.totalRepriced,
+		TotalFollowed:                  w.totalFollowed,
 	}
 }
 
@@ -498,8 +576,11 @@ func (e *Engine) repriceLoop(ctx context.Context, w *StoreWorker) {
 			return
 		default:
 		}
+		if !e.checkWorkerMembership(w) {
+			return
+		}
 		w.mu.RLock()
-		paused := w.isPaused || w.verificationRequired
+		paused := w.isPaused || w.verificationRequired || w.membershipVerificationRequired
 		w.mu.RUnlock()
 		if paused {
 			timer := time.NewTimer(250 * time.Millisecond)
@@ -523,26 +604,23 @@ func (e *Engine) repriceLoop(ctx context.Context, w *StoreWorker) {
 			}
 		}
 
-		if e.membershipChecker != nil && !e.membershipChecker.IsValid() {
-			name := w.name()
-			e.Log(fmt.Sprintf("⚠️ 店铺 [%s] 检测到会员资格失效或无法在线验证，已自动停止调价任务", name), "ERROR", w.storeID, name)
-			e.StopReprice(w.storeID)
-			return
-		}
-
 		w.mu.Lock()
 		w.lastRunTime = time.Now()
 		w.nextRunTime = time.Time{} // No countdown while this cycle is still running.
 		isPaused := w.isPaused
 		cycleCtx, cancelCycle := context.WithCancel(ctx)
 		w.cancelCycle = cancelCycle
-		if w.verificationRequired {
+		if w.verificationRequired || w.membershipVerificationRequired {
 			cancelCycle()
 		}
 		w.mu.Unlock()
 
 		if !isPaused {
 			e.executeRepriceCycle(cycleCtx, w)
+		}
+		if ctx.Err() == nil && !e.checkWorkerMembership(w) {
+			cancelCycle()
+			return
 		}
 		cycleCanceled := cycleCtx.Err() != nil
 		cancelCycle()
@@ -553,7 +631,7 @@ func (e *Engine) repriceLoop(ctx context.Context, w *StoreWorker) {
 			w.mu.Unlock()
 			return
 		}
-		if w.verificationRequired || cycleCanceled {
+		if w.verificationRequired || w.membershipVerificationRequired || cycleCanceled {
 			w.mu.Unlock()
 			continue
 		}

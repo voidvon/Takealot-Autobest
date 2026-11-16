@@ -5,7 +5,7 @@
 BINARY_NAME := takealot
 DIST_DIR := dist
 SCRIPTS_DIR := scripts
-DEFAULT_VERSION := 0.2.0
+DEFAULT_VERSION := 0.2.1
 
 WAILS := $(shell which wails 2>/dev/null || echo $(HOME)/go/bin/wails)
 
@@ -25,7 +25,7 @@ help:
 	@echo "  make build        编译当前平台原生桌面应用，产物统一输出到 dist/"
 	@echo "  make bump         查看当前计算出的下一个版本号"
 	@echo "  make release      自动升级版本号、打包 Windows x64 并发布至 GitHub Release"
-	@echo "                    (支持手动覆盖版本: make release VERSION=0.2.0)"
+	@echo "                    (支持手动覆盖版本: make release VERSION=0.2.1)"
 	@echo "  make clean        清理构建产物与临时文件"
 	@echo "========================================================"
 
