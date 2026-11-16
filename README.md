@@ -54,6 +54,12 @@ macOS 主窗口使用内存浏览器，界面设置由后端保存。文件夹�
 可用 `--data-dir /绝对路径/工作区` 显式指定数据目录。开发运行使用 `make dev` / `make dev-server`；直接 `go run .` 时请显式传入 `--data-dir ./data`。
 发布包只打包程序、文档和模板，禁止附带自己的 `data/`；该目录包含会员及店铺凭据。
 
+### 源码构建产物
+
+在源码目录运行 `make build`，最终程序统一放在 `dist/`：macOS 为 `dist/Takealot.app` 和 `dist/takealot`，Windows 为 `dist/Takealot.exe`。`start.sh` 使用或编译 `dist/takealot`，发布 ZIP 也输出到 `dist/`。Wails 的 `build/bin/` 仅作为中间构建目录，项目根目录不存放打包程序。
+
+直接运行 `dist/` 内的新版程序时，默认使用 `dist/data/`；开发运行可用 `--data-dir` 指定已有数据目录。`make clean` 只清理构建产物，保留 `dist/data/`。
+
 ---
 
 ## 会员注册与登录

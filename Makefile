@@ -1,6 +1,6 @@
 # Makefile for Takealot AutoBest (Wails 跨平台桌面端)
 
-.PHONY: all help dev dev-server build release clean bump
+.PHONY: all help dev dev-server build-frontend build release clean bump
 
 BINARY_NAME := takealot
 DIST_DIR := dist
@@ -22,7 +22,7 @@ help:
 	@echo "========================================================"
 	@echo "  make dev          启动 Wails 桌面开发模式 (热重载 React UI 与 Go 后端)"
 	@echo "  make dev-server   以纯命令行/服务端模式启动开发 (不弹出桌面窗口)"
-	@echo "  make build        编译当前平台原生桌面应用 (macOS 输出 Takealot.app)"
+	@echo "  make build        编译当前平台原生桌面应用，产物统一输出到 dist/"
 	@echo "  make bump         查看当前计算出的下一个版本号"
 	@echo "  make release      自动升级版本号、打包 Windows x64 并发布至 GitHub Release"
 	@echo "                    (支持手动覆盖版本: make release VERSION=0.2.0)"
@@ -47,11 +47,16 @@ build-frontend:
 build: build-frontend
 	@echo "🔨 正在使用 Wails 构建本地原生桌面应用 (v$(VERSION))..."
 	@$(WAILS) build -s -ldflags="-s -w -X main.Version=$(VERSION) -X main.BuildMode=production"
-	@rm -rf Takealot.app $(BINARY_NAME)
-	@cp -R build/bin/Takealot.app . 2>/dev/null || true
-	@cp build/bin/Takealot.app/Contents/MacOS/Takealot ./$(BINARY_NAME) 2>/dev/null || true
-	@chmod +x $(BINARY_NAME) 2>/dev/null || true
-	@echo "✅ 构建完成: ./Takealot.app (双击无黑框直接运行) 及单文件 ./$(BINARY_NAME)"
+	@mkdir -p "$(DIST_DIR)"
+	@case "$$(go env GOOS)" in \
+		darwin) \
+			rm -rf "$(DIST_DIR)/Takealot.app"; \
+			cp -R build/bin/Takealot.app "$(DIST_DIR)/" && \
+			cp build/bin/Takealot.app/Contents/MacOS/Takealot "$(DIST_DIR)/$(BINARY_NAME)" ;; \
+		windows) cp build/bin/Takealot.exe "$(DIST_DIR)/Takealot.exe" ;; \
+		*) cp build/bin/Takealot "$(DIST_DIR)/$(BINARY_NAME)" ;; \
+	 esac
+	@echo "✅ 构建完成: $(DIST_DIR)/"
 
 release: build-frontend
 	@echo "========================================================"
@@ -59,21 +64,22 @@ release: build-frontend
 	@echo "========================================================"
 	@which gh >/dev/null 2>&1 || (echo "❌ 错误: 未安装 GitHub CLI (gh)" && exit 1)
 	@gh auth status >/dev/null 2>&1 || (echo "❌ 错误: GitHub CLI 未登录，请先运行 gh auth login" && exit 1)
-	@echo "1. 清理并初始化构建目录..."
-	@rm -rf $(DIST_DIR)
-	@mkdir -p $(DIST_DIR)
+	@echo "1. 初始化发布目录（保留已有程序和运行数据）..."
+	@mkdir -p "$(DIST_DIR)"
 	@echo "2. 开始编译并打包 Windows x64 (ZIP 格式)..."
 	@echo "   -> [Windows] 编译 x86_64 原生桌面程序 (无黑框 GUI) 与打包 ZIP..."
 	@$(WAILS) build -platform windows/amd64 -s -ldflags="-s -w -X main.Version=$(VERSION) -X main.BuildMode=production"
-	@cp build/bin/Takealot.exe $(DIST_DIR)/Takealot.exe
-	@cp -f "批量导入模板.xlsx" README.md $(DIST_DIR)/
-	@cd $(DIST_DIR) && zip -q -r Takealot-v$(VERSION)-windows-amd64.zip Takealot.exe "批量导入模板.xlsx" README.md
-	@rm -f $(DIST_DIR)/Takealot.exe $(DIST_DIR)/"批量导入模板.xlsx" $(DIST_DIR)/README.md
+	@set -e; \
+		stage=$$(mktemp -d "$(DIST_DIR)/.release-XXXXXX"); \
+		trap 'rm -rf "$$stage"' EXIT HUP INT TERM; \
+		cp build/bin/Takealot.exe "批量导入模板.xlsx" README.md "$$stage/"; \
+		(cd "$$stage" && zip -q package.zip Takealot.exe "批量导入模板.xlsx" README.md); \
+		mv "$$stage/package.zip" "$(DIST_DIR)/Takealot-v$(VERSION)-windows-amd64.zip"
 	@echo "3. 生成 Release Notes..."
 	@printf "## 🚀 %s 发布\n\n### ✨ 核心功能\n- **Wails 现代化原生桌面端**：彻底告别控制台黑框终端，原生窗口启动，内置现代化 Web 交互\n- **多店铺聚合管理**：支持多店铺快捷切换、各店铺独立配置与聚合数据看板\n- **软件授权与安全体系**：支持 GoCMS 注册登录、在线 VIP 校验和登录会话数量限制\n- **会员账号修改密码**：支持在账号信息中随时修改登录密码并安全重新验证会话\n- **Cloudflare 拦截与异常在线上报**：前台竞品比价若遇 Cloudflare 拦截或抓取异常，自动通过普通用户反馈接口提交至 GoCMS「信息反馈」，无需后台密钥\n- **每日 10:00 自动检查更新**：新增每日早上 10:00 自动静默检查机制，具备抗休眠唤醒漂移能力\n- **实时比价战况看板**：展示处于优先、失去优先、独家在售统计及竞品最优价差\n- **智能防亏底价保护**：支持按规格独立设置底价与封顶价、按金额批量填入底价，修改售价不重算保护范围\n- **全自动跟价引擎**：毫秒级多协程轮询，自动下调/回调商品售价\n- **变体批量跟卖**：支持上传 Excel 自动识别 TSIN/PLID 变体并上架\n- **双模运行能力**：双击即可启动沉浸式桌面 GUI，亦支持通过 \`--server-only\` 以纯后端服务模式运行\n\n### 📦 资产下载 (Windows x64 ZIP)\n- **Windows (x64)**：\`Takealot-v%s-windows-amd64.zip\` (解压后双击 Takealot.exe，纯原生桌面窗口无 cmd 黑框)\n" "$(TAG)" "$(VERSION)" > $(DIST_DIR)/release_notes.md
 	@echo "4. 更新 VERSION 文件与 Git 提交..."
 	@echo $(VERSION) > VERSION
-	@git add VERSION scripts/ Makefile main.go app.go browser_session.go startup*.go go.mod go.sum wails.json pkg/ web/ third_party/ docs/ "批量导入模板.xlsx" .gitignore README.md
+	@git add VERSION scripts/ Makefile AGENTS.md start.sh main.go app.go browser_session.go startup*.go go.mod go.sum wails.json pkg/ web/ third_party/ docs/ "批量导入模板.xlsx" .gitignore README.md
 	@git diff --cached --quiet || git commit -m "chore: release $(TAG) for Windows x64"
 	@git push origin main
 	@echo "5. 创建并推送 Git Tag $(TAG)..."
@@ -91,5 +97,7 @@ release: build-frontend
 
 clean:
 	@echo "🧹 清理临时文件..."
-	@rm -rf $(DIST_DIR) $(BINARY_NAME) Takealot.app build/bin server.log
+	@rm -rf "$(DIST_DIR)/Takealot.app" "$(DIST_DIR)/$(BINARY_NAME)" "$(DIST_DIR)/keygen" \
+		"$(DIST_DIR)"/*.exe "$(DIST_DIR)"/Takealot-v*.zip \
+		"$(DIST_DIR)/release_notes.md" "$(DIST_DIR)/SHA256SUMS" build/bin server.log
 	@echo "✅ 清理完成"
